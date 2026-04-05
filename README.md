@@ -1,48 +1,62 @@
-# bob-shanbay-wordbook
+# bob-wordbook
 
-Bob 翻译插件 — 将查询的英语单词自动添加到扇贝单词本。
+Bob 翻译插件 — 将查询的英语单词自动收集到扇贝单词本和本地 Markdown 文件。
 
 ## 特性
 
-- **自动添加单词**：在 Bob 中查询英文单词时，自动同步到扇贝单词本
+- **扇贝同步**：查词时自动添加到扇贝单词本（即时）
+- **本地 Markdown 单词本**：以表格形式记录单词，支持 Created/Updated 时间追踪
 - **自动提取 Cookie**：无需手动复制 `auth_token`，通过 helper 工具自动从浏览器提取
-- **定时刷新**：LaunchAgent 每 30 分钟自动刷新 token，过期也无需手动干预
+- **定时刷新**：LaunchAgent 每 1 分钟自动处理单词队列和刷新 token
 - **多浏览器支持**：Chrome、Edge、Firefox
-- **手动备选**：自动提取失败时可回退到手动配置的 token
-- **词组过滤**：可选仅添加单个单词，跳过包含空格的词组
+- **智能去重**：已有单词仅更新 Updated 时间，Created 保持不变
+
+## 单词本表格格式
+
+本地 Markdown 文件以表格形式存储，自动按 Updated 时间倒序排列：
+
+```markdown
+# Word Book
+
+| Word | Created | Updated |
+|:-----|:--------|:--------|
+| serendipity | 2026-04-05 14:30 | 2026-04-07 10:15 |
+| ephemeral | 2026-04-05 15:02 | 2026-04-05 15:02 |
+```
+
+- **Word**：单词（小写）
+- **Created**：首次遇到该单词的时间
+- **Updated**：最近一次遇到的时间（忘记了再查一次）
 
 ## 架构
 
-本项目由两部分组成：
-
 ```
-┌─────────────────────────────────────────────────┐
-│                   Bob 翻译软件                    │
-│  ┌───────────────────────────────────────────┐  │
-│  │           Bob 插件 (JavaScript)            │  │
-│  │                                           │  │
-│  │  1. 读取 $sandbox/shanbay_auth_token     │  │
-│  │  2. 调用扇贝 API 添加单词                  │  │
-│  │  3. 回退到手动配置的 $option.auth_token    │  │
-│  └──────────────┬────────────────────────────┘  │
-│                 │ $sandbox/                      │
-└─────────────────┼───────────────────────────────┘
-                  │
-    ┌─────────────┴─────────────┐
-    │  Swift Helper (CLI 工具)   │
-    │                           │
-    │  • 读取 Chrome/Edge/Firefox│
-    │  • 解密 Chromium Cookie    │
-    │  • 写入 auth_token 到沙箱  │
-    └─────────────┬─────────────┘
-                  │ LaunchAgent (每 30 分钟)
-                  │
-    ┌─────────────┴─────────────┐
-    │      浏览器 Cookie 存储     │
-    │  Chrome  → AES 加密 SQLite │
-    │  Edge    → AES 加密 SQLite │
-    │  Firefox → 明文 SQLite     │
-    └───────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                    Bob 翻译软件                        │
+│  ┌────────────────────────────────────────────────┐  │
+│  │           Bob 插件 (JavaScript)                 │  │
+│  │                                                │  │
+│  │  1. 调用扇贝 API 添加单词（即时）               │  │
+│  │  2. 写入单词到 $sandbox/word_queue.jsonl       │  │
+│  └────────────────┬───────────────────────────────┘  │
+│                   │ $sandbox/                         │
+└───────────────────┼──────────────────────────────────┘
+                    │ 每 1 分钟 (LaunchAgent)
+      ┌─────────────┴─────────────┐
+      │  bob-wordbook-helper       │
+      │                           │
+      │  1. 读取 word_queue.jsonl  │
+      │  2. 更新本地 Markdown 文件  │
+      │  3. 提取浏览器 Cookie       │
+      │  4. 更新沙箱中的 token     │
+      └─────────────┬─────────────┘
+                    │
+      ┌─────────────┴─────────────┐
+      │      浏览器 Cookie 存储     │
+      │  Chrome  → AES 加密 SQLite │
+      │  Edge    → AES 加密 SQLite │
+      │  Firefox → 明文 SQLite     │
+      └───────────────────────────┘
 ```
 
 ## 安装
@@ -52,38 +66,44 @@ Bob 翻译插件 — 将查询的英语单词自动添加到扇贝单词本。
 - macOS 13+
 - [Bob](https://bobtranslate.com/) 翻译软件
 - Xcode Command Line Tools（`xcode-select --install`）
-- 在 Chrome / Edge / Firefox 中登录 [扇贝](https://www.shanbay.com/)
+- 在浏览器中登录 [扇贝](https://www.shanbay.com/)（如需扇贝同步）
 
 ### 步骤
 
-1. **安装 helper 工具**
+#### 1. 安装 helper 工具
 
 ```bash
 cd helper
 make install
 ```
 
-这会编译 Swift helper、安装到 `/usr/local/bin/`、提取首次 token、并配置 LaunchAgent。
+这会编译 Swift helper、安装到 `/usr/local/bin/`、配置 LaunchAgent。
 
-> 首次运行时，系统会弹出 Keychain 访问授权窗口（用于解密 Chrome cookie），请点击「允许」。
+#### 2. 配置本地 Markdown 单词本
 
-2. **安装 Bob 插件**
+```bash
+bob-wordbook-helper init
+```
+
+按提示输入 Markdown 文件路径，例如 `/Users/cian/Notes/wordbook.md`。
+
+> 如果不需要本地单词本，直接跳过此步骤即可（仅使用扇贝同步）。
+
+#### 3. 安装 Bob 插件
 
 ```bash
 cd src
-zip -r -j ../bob-shanbay-wordbook.bobplugin *
-# 双击 bob-shanbay-wordbook.bobplugin 安装到 Bob
+zip -r -j ../bob-wordbook.bobplugin info.json main.js shanbay.js
+# 双击 bob-wordbook.bobplugin 安装到 Bob
 ```
 
-或在 Bob 中：偏好设置 → 插件 → 点击 `+` → 选择 `bob-shanbay-wordbook.bobplugin`
+#### 4. 配置插件（可选）
 
-3. **配置插件**
+在 Bob 偏好设置 → 插件 → 单词本 中按需调整：
 
-在 Bob 偏好设置 → 插件 → 扇贝单词本 中：
-
-- **自动提取 Cookie**：保持默认「是」（依赖 helper 工具）
-- **Auth Token（手动备选）**：留空（除非 helper 无法工作）
+- **扇贝 Auth Token**：留空（使用自动提取）
 - **仅添加单词**：按需选择
+- **自动提取 Cookie**：保持「是」
 - **显示添加结果**：按需选择
 
 ### 验证
@@ -92,10 +112,20 @@ zip -r -j ../bob-shanbay-wordbook.bobplugin *
 
 ## 使用
 
-安装完成后，每次在 Bob 中查询英文单词，该单词会自动添加到你的扇贝单词本。
+安装完成后，每次在 Bob 中查询英文单词：
 
-- 查看日志：`tail -f /tmp/shanbay-cookie-helper.log`
-- 手动刷新 token：`shanbay-cookie-helper`
+1. **即时**同步到扇贝单词本
+2. **1 分钟内**自动写入本地 Markdown 单词本
+
+常用命令：
+
+```bash
+bob-wordbook-helper              # 手动触发一次完整处理
+bob-wordbook-helper extract      # 仅刷新扇贝 token
+bob-wordbook-helper process      # 仅处理单词队列
+bob-wordbook-helper init         # 重新配置 Markdown 路径
+tail -f /tmp/bob-wordbook-helper.log  # 查看日志
+```
 
 ## 卸载
 
@@ -109,22 +139,23 @@ make uninstall
 ### 项目结构
 
 ```
-bob-shanbay-wordbook/
+bob-wordbook/
 ├── src/                    # Bob 插件源码
 │   ├── info.json           # 插件清单
-│   ├── main.js             # 插件入口
+│   ├── main.js             # 插件入口（队列写入 + 扇贝同步）
 │   └── shanbay.js          # 扇贝 API 集成
-├── helper/                 # Cookie 提取工具
+├── helper/                 # 辅助工具
 │   ├── Sources/
 │   │   └── ShanbayCookieHelper/
-│   │       └── main.swift  # Swift CLI 工具
-│   ├── Makefile            # 构建脚本
-│   ├── install.sh          # 安装脚本
-│   └── uninstall.sh        # 卸载脚本
+│   │       └── main.swift  # Swift CLI（Cookie 提取 + Markdown 处理）
+│   ├── config.json.example # 配置示例
+│   ├── Makefile
+│   ├── install.sh
+│   └── uninstall.sh
 ├── DESIGN.md               # 设计文档
-├── appcast.json            # 自动更新配置
-├── release.sh              # 发布脚本
-└── README.md               # 本文件
+├── appcast.json
+├── release.sh
+└── README.md
 ```
 
 ### 构建插件包
@@ -132,17 +163,6 @@ bob-shanbay-wordbook/
 ```bash
 bash release.sh
 ```
-
-### Chrome Cookie 解密原理
-
-Chrome 在 macOS 上使用 AES-128-CBC 加密 cookie：
-
-1. 从 macOS Keychain 获取加密密钥（service: `Chrome Safe Storage`）
-2. 使用 PBKDF2-HMAC-SHA1 派生 AES 密钥（salt: `saltysalt`, iterations: 1003, key length: 16）
-3. IV 为 16 字节的 `0x20`（空格字符）
-4. 密文前缀为 `v10`，去掉前缀后为 AES-CBC 密文
-
-Firefox 的 cookie 为明文存储，直接读取 SQLite 即可。
 
 ## 致谢
 

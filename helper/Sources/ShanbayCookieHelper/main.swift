@@ -12,13 +12,51 @@ let tokenCookieName = "auth_token"
 let bobSandboxPath = NSHomeDirectory()
     + "/Library/Containers/com.hezongyidev.Bob/Data/Documents/InstalledPluginSandbox"
 let tokenFileName = "shanbay_auth_token"
+let queueFileName = "word_queue.jsonl"
 
-// MARK: - Command Line Arguments
+// Helper 配置路径
+let configDir = NSHomeDirectory() + "/.config/bob-wordbook"
+let configPath = configDir + "/config.json"
+
+// MARK: - Config
+
+struct HelperConfig: Codable {
+    var markdown_path: String?
+}
+
+func loadConfig() -> HelperConfig {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+        let config = try? JSONDecoder().decode(HelperConfig.self, from: data)
+    else {
+        return HelperConfig()
+    }
+    return config
+}
+
+func saveConfig(_ config: HelperConfig) -> Bool {
+    do {
+        try FileManager.default.createDirectory(
+            atPath: configDir,
+            withIntermediateDirectories: true
+        )
+        let data = try JSONEncoder().encode(config)
+        try data.write(to: URL(fileURLWithPath: configPath))
+        return true
+    } catch {
+        print("[ERROR] Failed to save config: \(error.localizedDescription)")
+        return false
+    }
+}
+
+// MARK: - Command Line
 
 enum Mode: String {
+    case run = "run"
     case extract = "extract"
+    case process = "process"
     case install = "install"
     case uninstall = "uninstall"
+    case initConfig = "init"
     case help = "help"
 }
 
@@ -27,22 +65,33 @@ func parseMode() -> Mode {
     if args.count > 1 {
         return Mode(rawValue: args[1]) ?? .help
     }
-    return .extract
+    return .run
 }
 
 func printUsage() {
     let usage = """
-    Shanbay Cookie Helper — 自动从浏览器提取扇贝 auth_token
+    bob-wordbook-helper — Bob 单词本辅助工具
 
     用法:
-      shanbay-cookie-helper              提取 token 并保存到 Bob 沙箱
-      shanbay-cookie-helper extract      同上
-      shanbay-cookie-helper install      安装 LaunchAgent（每 30 分钟自动刷新）
-      shanbay-cookie-helper uninstall    卸载 LaunchAgent
-      shanbay-cookie-helper help         显示帮助
+      bob-wordbook-helper              提取扇贝 token + 处理单词队列（默认）
+      bob-wordbook-helper extract      仅提取扇贝 token
+      bob-wordbook-helper process      仅处理单词队列（写入 Markdown）
+      bob-wordbook-helper init         初始化配置（设置 Markdown 文件路径）
+      bob-wordbook-helper install      安装 LaunchAgent（每 1 分钟自动运行）
+      bob-wordbook-helper uninstall    卸载 LaunchAgent
+      bob-wordbook-helper help         显示帮助
     """
     print(usage)
 }
+
+// MARK: - Date Formatting
+
+let dateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm"
+    f.locale = Locale(identifier: "zh_CN")
+    return f
+}()
 
 // MARK: - Browser Cookie Paths
 
@@ -122,20 +171,17 @@ func getKeychainPassword(service: String, account: String) -> String? {
     return password
 }
 
-// MARK: - Cryptography (Pure Swift using CryptoKit + openssl for AES-CBC)
+// MARK: - Cryptography
 
-/// PBKDF2-HMAC-SHA1 key derivation
 func deriveKeyPBKDF2(password: String, salt: Data, iterations: Int, keyLength: Int) -> Data {
     let passwordData = Data(password.utf8)
-    let blockSize = 20  // SHA1 digest length
+    let blockSize = 20  // SHA1
     let blockCount = (keyLength + blockSize - 1) / blockSize
-
     var derivedKey = Data()
 
     for blockIndex in 1...blockCount {
         var u = hmacSHA1(key: passwordData, data: salt + bigEndianData(blockIndex))
         var result = u
-
         for _ in 1..<iterations {
             u = hmacSHA1(key: passwordData, data: u)
             for i in 0..<result.count {
@@ -144,30 +190,25 @@ func deriveKeyPBKDF2(password: String, salt: Data, iterations: Int, keyLength: I
         }
         derivedKey.append(result)
     }
-
     return Data(derivedKey.prefix(keyLength))
 }
 
-/// HMAC-SHA1 using CryptoKit
 func hmacSHA1(key: Data, data: Data) -> Data {
     let symmetricKey = SymmetricKey(data: key)
     let authCode = HMAC<Insecure.SHA1>.authenticationCode(for: data, using: symmetricKey)
     return Data(authCode)
 }
 
-/// Convert integer to 4-byte big-endian data
 func bigEndianData(_ value: Int) -> Data {
     var intVal = UInt32(value).bigEndian
     return Data(bytes: &intVal, count: 4)
 }
 
-/// AES-128-CBC 解密（通过 macOS 自带的 openssl 命令行）
 func decryptAES128CBC(data: Data, key: Data, iv: Data) -> Data? {
     guard data.count % 16 == 0 else { return nil }
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
-
     process.arguments = [
         "enc", "-aes-128-cbc", "-d",
         "-K", key.map { String(format: "%02x", $0) }.joined(),
@@ -190,7 +231,6 @@ func decryptAES128CBC(data: Data, key: Data, iv: Data) -> Data? {
         guard process.terminationStatus == 0 else { return nil }
         let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
 
-        // 移除 PKCS7 padding
         guard let lastByte = outputData.last, lastByte > 0, lastByte <= 16 else {
             return outputData
         }
@@ -205,32 +245,21 @@ func decryptAES128CBC(data: Data, key: Data, iv: Data) -> Data? {
     }
 }
 
-/// 解密 Chromium 浏览器 cookie（v10 / v20）
 func decryptChromiumCookie(encryptedValue: Data, browser: String) -> String? {
     guard encryptedValue.count > 3 else { return nil }
-
     let prefix = String(data: encryptedValue.prefix(3), encoding: .utf8)
     guard prefix == "v10" || prefix == "v20" else { return nil }
 
     let ciphertext = Data(encryptedValue.dropFirst(3))
-
     let (serviceName, accountName): (String, String) = browser == "edge"
         ? ("Microsoft Edge Safe Storage", "Microsoft Edge")
         : ("Chrome Safe Storage", "Chrome")
 
     guard let password = getKeychainPassword(service: serviceName, account: accountName)
-    else {
-        return nil
-    }
+    else { return nil }
 
     let salt = Data("saltysalt".utf8)
-    let key = deriveKeyPBKDF2(
-        password: password,
-        salt: salt,
-        iterations: 1003,
-        keyLength: 16
-    )
-
+    let key = deriveKeyPBKDF2(password: password, salt: salt, iterations: 1003, keyLength: 16)
     let iv = Data(repeating: 0x20, count: 16)
 
     guard let decrypted = decryptAES128CBC(data: ciphertext, key: key, iv: iv)
@@ -241,32 +270,22 @@ func decryptChromiumCookie(encryptedValue: Data, browser: String) -> String? {
 
 // MARK: - SQLite Cookie Extraction
 
-/// 从 Chromium 系浏览器提取 auth_token
 func extractTokenFromChromiumDB(dbPath: String, browser: String) -> String? {
-    let tempPath = NSTemporaryDirectory() + "shanbay_helper_\(browser)_cookies.db"
+    let tempPath = NSTemporaryDirectory() + "bob_wordbook_\(browser)_cookies.db"
     try? FileManager.default.removeItem(atPath: tempPath)
     do {
         try FileManager.default.copyItem(atPath: dbPath, toPath: tempPath)
-    } catch {
-        return nil
-    }
-    defer {
-        try? FileManager.default.removeItem(atPath: tempPath)
-    }
+    } catch { return nil }
+    defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
     var db: OpaquePointer?
     guard sqlite3_open(tempPath, &db) == SQLITE_OK else { return nil }
     defer { sqlite3_close(db) }
 
-    let query = """
-        SELECT encrypted_value FROM cookies
-        WHERE host_key LIKE ? AND name = ?
-        ORDER BY creation_utc DESC
-        LIMIT 1
-    """
-
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    guard sqlite3_prepare_v2(db,
+        "SELECT encrypted_value FROM cookies WHERE host_key LIKE ? AND name = ? ORDER BY creation_utc DESC LIMIT 1",
+        -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
 
     sqlite3_bind_text(stmt, 1, ("%\(shanbayDomain)"), -1, nil)
@@ -276,40 +295,28 @@ func extractTokenFromChromiumDB(dbPath: String, browser: String) -> String? {
         let blobPtr = sqlite3_column_blob(stmt, 0)
         let blobSize = Int(sqlite3_column_bytes(stmt, 0))
         guard blobPtr != nil, blobSize > 0 else { return nil }
-
         let encryptedValue = Data(bytes: blobPtr!, count: blobSize)
         return decryptChromiumCookie(encryptedValue: encryptedValue, browser: browser)
     }
-
     return nil
 }
 
-/// 从 Firefox 提取 auth_token（明文存储）
 func extractTokenFromFirefoxDB(dbPath: String) -> String? {
-    let tempPath = NSTemporaryDirectory() + "shanbay_helper_firefox_cookies.db"
+    let tempPath = NSTemporaryDirectory() + "bob_wordbook_firefox_cookies.db"
     try? FileManager.default.removeItem(atPath: tempPath)
     do {
         try FileManager.default.copyItem(atPath: dbPath, toPath: tempPath)
-    } catch {
-        return nil
-    }
-    defer {
-        try? FileManager.default.removeItem(atPath: tempPath)
-    }
+    } catch { return nil }
+    defer { try? FileManager.default.removeItem(atPath: tempPath) }
 
     var db: OpaquePointer?
     guard sqlite3_open(tempPath, &db) == SQLITE_OK else { return nil }
     defer { sqlite3_close(db) }
 
-    let query = """
-        SELECT value FROM moz_cookies
-        WHERE host LIKE ? AND name = ?
-        ORDER BY creationTime DESC
-        LIMIT 1
-    """
-
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    guard sqlite3_prepare_v2(db,
+        "SELECT value FROM moz_cookies WHERE host LIKE ? AND name = ? ORDER BY creationTime DESC LIMIT 1",
+        -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
 
     sqlite3_bind_text(stmt, 1, ("%\(shanbayDomain)"), -1, nil)
@@ -320,54 +327,35 @@ func extractTokenFromFirefoxDB(dbPath: String) -> String? {
             return String(cString: value)
         }
     }
-
     return nil
 }
 
-// MARK: - Core Logic
+// MARK: - Shanbei Token Extraction
 
-/// 从所有已安装的浏览器中提取扇贝 auth_token
 func extractShanbayAuthToken() -> (token: String, source: String)? {
     for (path, browser) in getChromeCookiePaths() {
         if let token = extractTokenFromChromiumDB(dbPath: path, browser: browser) {
             return (token, browser)
         }
     }
-
     for (path, browser) in getEdgeCookiePaths() {
         if let token = extractTokenFromChromiumDB(dbPath: path, browser: browser) {
             return (token, browser)
         }
     }
-
     for (path, _) in getFirefoxCookiePaths() {
         if let token = extractTokenFromFirefoxDB(dbPath: path) {
             return (token, "firefox")
         }
     }
-
     return nil
 }
 
-/// 保存 token 到 Bob 沙箱目录
-func saveToken(_ token: String, toPath customPath: String? = nil) -> Bool {
-    let savePath: String
-    if let custom = customPath {
-        savePath = custom
-    } else {
-        savePath = bobSandboxPath + "/" + tokenFileName
-    }
-
+func saveToken(_ token: String) -> Bool {
+    let savePath = bobSandboxPath + "/" + tokenFileName
     do {
-        let dir = (customPath != nil)
-            ? (customPath! as NSString).deletingLastPathComponent
-            : bobSandboxPath
-        try FileManager.default.createDirectory(
-            atPath: dir,
-            withIntermediateDirectories: true
-        )
+        try FileManager.default.createDirectory(atPath: bobSandboxPath, withIntermediateDirectories: true)
         try token.write(toFile: savePath, atomically: true, encoding: .utf8)
-        print("[INFO] Token saved to: \(savePath)")
         return true
     } catch {
         print("[ERROR] Failed to save token: \(error.localizedDescription)")
@@ -375,10 +363,232 @@ func saveToken(_ token: String, toPath customPath: String? = nil) -> Bool {
     }
 }
 
-// MARK: - LaunchAgent Management
+// MARK: - Word Queue
 
-let launchAgentLabel = "com.shanbay-cookie-helper.refresh"
-let launchAgentPlistName = launchAgentLabel + ".plist"
+struct QueueEntry: Codable {
+    var word: String
+    var time: String  // ISO 8601
+}
+
+func readQueue() -> [QueueEntry] {
+    let queuePath = bobSandboxPath + "/" + queueFileName
+    guard let content = try? String(contentsOfFile: queuePath, encoding: .utf8),
+        !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+        return []
+    }
+
+    var entries: [QueueEntry] = []
+    for line in content.components(separatedBy: .newlines) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+            let data = trimmed.data(using: .utf8),
+            let entry = try? JSONDecoder().decode(QueueEntry.self, from: data)
+        else { continue }
+        entries.append(entry)
+    }
+    return entries
+}
+
+func clearQueue() {
+    let queuePath = bobSandboxPath + "/" + queueFileName
+    try? "".write(toFile: queuePath, atomically: true, encoding: .utf8)
+}
+
+// MARK: - Markdown Wordbook
+
+/// Markdown 单词本表格格式：
+/// | Word | Created | Updated |
+/// |:-----|:--------|:--------|
+/// | example | 2026-04-05 14:30 | 2026-04-05 14:30 |
+
+let markdownHeader = """
+# Word Book
+
+> 自动由 Bob 单词本插件生成，请勿手动编辑表格部分。
+
+| Word | Created | Updated |
+|:-----|:--------|:--------|
+"""
+
+let tableSeparator = "|:-----|:--------|:--------|"
+
+func parseMarkdownTable(_ lines: [String]) -> (headerLines: [String], rows: [String], footerLines: [String]) {
+    var headerLines: [String] = []
+    var rows: [String] = []
+    var footerLines: [String] = []
+    var inTable = false
+    var pastTable = false
+
+    for line in lines {
+        if line.trimmingCharacters(in: .whitespaces) == tableSeparator {
+            inTable = true
+            headerLines.append(line)
+            continue
+        }
+        if inTable && line.hasPrefix("|") && line.hasSuffix("|") {
+            // 跳过分隔行之后紧跟的空行
+            if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                pastTable = true
+                inTable = false
+                footerLines.append(line)
+                continue
+            }
+            rows.append(line)
+            continue
+        }
+        if inTable && !line.hasPrefix("|") {
+            pastTable = true
+            inTable = false
+        }
+        if pastTable {
+            footerLines.append(line)
+        } else {
+            headerLines.append(line)
+        }
+    }
+
+    return (headerLines, rows, footerLines)
+}
+
+/// 从表格行中提取单词（第一个 `|` 后到第二个 `|` 之间的内容）
+func extractWordFromRow(_ row: String) -> String {
+    let parts = row.split(separator: "|", omittingEmptySubsequences: true)
+    guard parts.count >= 1 else { return "" }
+    return parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+}
+
+/// 构造表格行
+func makeTableRow(word: String, created: String, updated: String) -> String {
+    return "| \(word) | \(created) | \(updated) |"
+}
+
+func processQueueToMarkdown(entries: [QueueEntry], markdownPath: String) {
+    let fileManager = FileManager.default
+
+    // 读取现有文件
+    var existingContent: String?
+    if fileManager.fileExists(atPath: markdownPath) {
+        existingContent = try? String(contentsOfFile: markdownPath, encoding: .utf8)
+    }
+
+    let lines = existingContent?.components(separatedBy: .newlines) ?? []
+
+    // 检查文件是否有表格（通过查找分隔行）
+    let hasTable = lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == tableSeparator })
+
+    var wordMap: [String: (created: String, updated: String)] = [:]
+
+    if hasTable {
+        // 解析现有表格
+        let (headerLines, rows, footerLines) = parseMarkdownTable(lines)
+
+        // 收集已有单词
+        for row in rows {
+            let word = extractWordFromRow(row)
+            guard !word.isEmpty else { continue }
+            // 解析 created 和 updated
+            let parts = row.split(separator: "|", omittingEmptySubsequences: true)
+            let created = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+            let updated = parts.count > 2 ? parts[2].trimmingCharacters(in: .whitespaces) : created
+            wordMap[word] = (created, updated)
+        }
+
+        // 处理队列中的新单词
+        for entry in entries {
+            let word = entry.word.lowercased()
+            let now = dateFormatter.string(from: Date())
+            if let existing = wordMap[word] {
+                // 单词已存在：保留 Created，更新 Updated
+                wordMap[word] = (existing.created, now)
+            } else {
+                // 新单词：Created = Updated = now
+                wordMap[word] = (now, now)
+            }
+        }
+
+        // 重建表格内容
+        var newLines = headerLines
+        // 保留到分隔行
+        if !newLines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == tableSeparator }) {
+            newLines.append(tableSeparator)
+        }
+        for (word, times) in wordMap.sorted(by: { $0.value.updated > $1.value.updated }) {
+            newLines.append(makeTableRow(word: word, created: times.created, updated: times.updated))
+        }
+        newLines.append(contentsOf: footerLines)
+
+        let newContent = newLines.joined(separator: "\n")
+        try? newContent.write(toFile: markdownPath, atomically: true, encoding: .utf8)
+
+    } else {
+        // 文件不存在或没有表格：创建新表格
+        var newLines = lines
+        if !newLines.isEmpty && newLines.last?.isEmpty == false {
+            newLines.append("")
+        }
+
+        // 如果文件完全为空，写入完整 header
+        if newLines.isEmpty || (newLines.count == 1 && newLines[0].isEmpty) {
+            newLines = markdownHeader.components(separatedBy: .newlines)
+            // 去掉末尾空行
+            while newLines.last?.isEmpty == true { newLines.removeLast() }
+        } else {
+            // 文件有内容但没有表格，追加表格
+            newLines.append("")
+            newLines.append("| Word | Created | Updated |")
+            newLines.append(tableSeparator)
+        }
+
+        // 处理队列
+        for entry in entries {
+            let word = entry.word.lowercased()
+            let now = dateFormatter.string(from: Date())
+            wordMap[word] = (now, now)
+        }
+
+        for (word, times) in wordMap {
+            newLines.append(makeTableRow(word: word, created: times.created, updated: times.updated))
+        }
+
+        newLines.append("")
+        let newContent = newLines.joined(separator: "\n")
+        try? newContent.write(toFile: markdownPath, atomically: true, encoding: .utf8)
+    }
+}
+
+// MARK: - Process Queue
+
+func processQueue() {
+    let config = loadConfig()
+
+    guard let markdownPath = config.markdown_path, !markdownPath.isEmpty else {
+        print("[INFO] No markdown_path configured. Run 'bob-wordbook-helper init' to set up.")
+        return
+    }
+
+    let entries = readQueue()
+    guard !entries.isEmpty else {
+        print("[INFO] No pending words in queue.")
+        return
+    }
+
+    // 去重：同一批次中重复的单词只保留最后一次
+    var deduped: [String: QueueEntry] = [:]
+    for entry in entries {
+        deduped[entry.word.lowercased()] = entry
+    }
+    let uniqueEntries = Array(deduped.values)
+
+    print("[INFO] Processing \(uniqueEntries.count) word(s)...")
+    processQueueToMarkdown(entries: uniqueEntries, markdownPath: markdownPath)
+    clearQueue()
+    print("[SUCCESS] Words written to \(markdownPath)")
+}
+
+// MARK: - LaunchAgent
+
+let launchAgentLabel = "com.bob-wordbook-helper.refresh"
 let launchAgentPlistContent = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -388,58 +598,49 @@ let launchAgentPlistContent = """
     <string>\(launchAgentLabel)</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/shanbay-cookie-helper</string>
+        <string>/usr/local/bin/bob-wordbook-helper</string>
     </array>
     <key>StartInterval</key>
-    <integer>1800</integer>
+    <integer>60</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/shanbay-cookie-helper.log</string>
+    <string>/tmp/bob-wordbook-helper.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/shanbay-cookie-helper.err</string>
+    <string>/tmp/bob-wordbook-helper.err</string>
 </dict>
 </plist>
 """
 
 func installLaunchAgent() {
     let launchAgentsDir = NSHomeDirectory() + "/Library/LaunchAgents"
-    let plistPath = launchAgentsDir + "/" + launchAgentPlistName
-    let binaryPath = "/usr/local/bin/shanbay-cookie-helper"
+    let plistPath = launchAgentsDir + "/" + launchAgentLabel + ".plist"
+    let binaryPath = "/usr/local/bin/bob-wordbook-helper"
 
     guard FileManager.default.fileExists(atPath: binaryPath) else {
         print("[ERROR] Binary not found at \(binaryPath)")
-        print("[HINT] Run install.sh first to build and install the helper.")
+        print("[HINT] Run 'make install' first.")
         exit(1)
     }
 
     do {
-        try FileManager.default.createDirectory(
-            atPath: launchAgentsDir,
-            withIntermediateDirectories: true
-        )
-        try launchAgentPlistContent.write(
-            toFile: plistPath,
-            atomically: true,
-            encoding: .utf8
-        )
+        try FileManager.default.createDirectory(atPath: launchAgentsDir, withIntermediateDirectories: true)
+        try launchAgentPlistContent.write(toFile: plistPath, atomically: true, encoding: .utf8)
 
-        // 先卸载旧的
         let unload = Process()
         unload.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         unload.arguments = ["bootout", "gui/\(getuid())/\(launchAgentLabel)"]
         try? unload.run()
         unload.waitUntilExit()
 
-        // 加载新的
         let load = Process()
         load.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         load.arguments = ["bootstrap", "gui/\(getuid())", plistPath]
         try? load.run()
         load.waitUntilExit()
 
-        print("[SUCCESS] LaunchAgent installed. Token will refresh every 30 minutes.")
-        print("[INFO] Log: /tmp/shanbay-cookie-helper.log")
+        print("[SUCCESS] LaunchAgent installed (runs every 1 minute).")
+        print("[INFO] Log: /tmp/bob-wordbook-helper.log")
     } catch {
         print("[ERROR] Failed to install LaunchAgent: \(error.localizedDescription)")
         exit(1)
@@ -447,7 +648,7 @@ func installLaunchAgent() {
 }
 
 func uninstallLaunchAgent() {
-    let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/" + launchAgentPlistName
+    let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/" + launchAgentLabel + ".plist"
 
     let unload = Process()
     unload.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -457,14 +658,66 @@ func uninstallLaunchAgent() {
 
     try? FileManager.default.removeItem(atPath: plistPath)
 
-    for logFile in [
-        "/tmp/shanbay-cookie-helper.log",
-        "/tmp/shanbay-cookie-helper.err",
-    ] {
+    for logFile in ["/tmp/bob-wordbook-helper.log", "/tmp/bob-wordbook-helper.err"] {
         try? FileManager.default.removeItem(atPath: logFile)
     }
 
     print("[SUCCESS] LaunchAgent uninstalled.")
+}
+
+// MARK: - Init Config
+
+func initConfig() {
+    print("=== bob-wordbook-helper 初始化 ===")
+    print("")
+
+    // 检查是否已有配置
+    if FileManager.default.fileExists(atPath: configPath) {
+        if let content = try? String(contentsOfFile: configPath, encoding: .utf8) {
+            print("当前配置 (\(configPath)):")
+            print(content)
+            print("")
+        }
+    }
+
+    print("请输入 Markdown 单词本文件的完整路径：")
+    print("（例如：/Users/cian/Notes/wordbook.md）")
+    print("留空则跳过本地单词本功能（仅使用扇贝）")
+    print("")
+
+    guard let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !input.isEmpty
+    else {
+        // 无 Markdown 路径，保存空配置
+        let config = HelperConfig(markdown_path: nil)
+        if saveConfig(config) {
+            print("")
+            print("[INFO] 已保存配置（不使用本地 Markdown 单词本）。")
+        }
+        return
+    }
+
+    // 验证路径
+    let expandedPath = (input as NSString).expandingTildeInPath
+    let dir = (expandedPath as NSString).deletingLastPathComponent
+
+    if !FileManager.default.fileExists(atPath: dir) {
+        print("[ERROR] 目录不存在: \(dir)")
+        exit(1)
+    }
+
+    // 如果文件不存在，创建初始内容
+    if !FileManager.default.fileExists(atPath: expandedPath) {
+        try? markdownHeader.write(toFile: expandedPath, atomically: true, encoding: .utf8)
+        print("[INFO] 已创建单词本文件: \(expandedPath)")
+    }
+
+    let config = HelperConfig(markdown_path: expandedPath)
+    if saveConfig(config) {
+        print("")
+        print("[SUCCESS] 配置已保存到: \(configPath)")
+        print("[INFO] 单词本路径: \(expandedPath)")
+    }
 }
 
 // MARK: - Entry Point
@@ -476,23 +729,41 @@ case .help:
     printUsage()
 
 case .extract:
-    let result = extractShanbayAuthToken()
-    if let (token, source) = result {
+    if let (token, source) = extractShanbayAuthToken() {
         print("[INFO] Extracted auth_token from \(source): \(token.prefix(8))...\(token.suffix(4))")
         if saveToken(token) {
-            print("[SUCCESS] Shanbay auth_token updated successfully.")
+            print("[SUCCESS] Shanbay auth_token updated.")
         } else {
             exit(1)
         }
     } else {
-        print("[ERROR] Could not find Shanbay auth_token from any browser.")
-        print("[HINT] Make sure you are logged in to shanbay.com in Chrome, Edge, or Firefox.")
-        exit(1)
+        print("[WARN] No Shanbay auth_token found. Make sure you're logged in to shanbay.com.")
     }
+
+case .process:
+    processQueue()
+
+case .initConfig:
+    initConfig()
 
 case .install:
     installLaunchAgent()
 
 case .uninstall:
     uninstallLaunchAgent()
+
+// 默认模式（无参数）：提取 token + 处理队列
+case .run:
+    // 提取扇贝 token
+    if let (token, source) = extractShanbayAuthToken() {
+        print("[INFO] Extracted auth_token from \(source): \(token.prefix(8))...\(token.suffix(4))")
+        if saveToken(token) {
+            print("[SUCCESS] Shanbay auth_token updated.")
+        }
+    } else {
+        print("[WARN] No Shanbay auth_token found.")
+    }
+
+    // 处理单词队列
+    processQueue()
 }

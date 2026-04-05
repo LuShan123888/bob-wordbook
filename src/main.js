@@ -1,10 +1,37 @@
-// Bob 插件入口：将查询的英语单词自动添加到扇贝单词本
+// Bob 插件入口：将查询的英语单词自动收集到单词本
 // 本插件不执行翻译，仅作为单词收集的桥梁
+//
+// 收集目标：
+// 1. 扇贝单词本（即时，通过 HTTP API）
+// 2. 本地 Markdown 文件（通过 helper 定时处理队列）
 
 var shanbay = require("./shanbay.js");
 
+var QUEUE_FILE = "$sandbox/word_queue.jsonl";
+
 function supportLanguages() {
     return ["zh-Hans", "zh-Hant", "en", "ja", "ko", "fr", "de", "es", "ru", "it", "pt"];
+}
+
+/**
+ * 将单词写入本地队列，供 helper 处理后写入 Markdown 文件
+ */
+function enqueueWord(word) {
+    var entry = JSON.stringify({
+        word: word,
+        time: new Date().toISOString(),
+    });
+    var existing = "";
+    try {
+        existing = $file.read(QUEUE_FILE) || "";
+    } catch (e) {
+        // 文件不存在，忽略
+    }
+    try {
+        $file.write(QUEUE_FILE, existing + entry + "\n");
+    } catch (e) {
+        $log.error("Failed to write word queue: " + e);
+    }
 }
 
 function translate(query, completion) {
@@ -24,27 +51,31 @@ function translate(query, completion) {
         return;
     }
 
+    // 写入本地队列（供 helper 写入 Markdown）
+    enqueueWord(text);
+
+    // 添加到扇贝（即时）
     shanbay.addWord(text, function (result) {
         var showResult = $option.show_result !== "0";
         if (result.error) {
-            $log.error("Shanbay add word failed: " + result.error);
+            $log.warn("Shanbay: " + result.error);
             completion({
                 result: {
                     from: detectFrom,
                     to: query.to,
                     toParagraphs: showResult
-                        ? ["⚠️ 扇贝添加失败: " + result.error]
+                        ? ["📋 已记录: " + text + "\n⚠️ 扇贝同步失败: " + result.error]
                         : [],
                 },
             });
         } else {
-            $log.info("Shanbay add word success: " + text);
+            $log.info("Word collected: " + text);
             completion({
                 result: {
                     from: detectFrom,
                     to: query.to,
                     toParagraphs: showResult
-                        ? ["✅ 已添加到扇贝单词本: " + text]
+                        ? ["📋 已记录: " + text]
                         : [],
                 },
             });
