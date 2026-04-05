@@ -1,0 +1,8 @@
+.DS_Store
+*.bobplugin
+.build/
+*.o
+*.swiftdoc
+*.swiftsourceinfo
+shanbay-cookie-helper
+.env

@@ -1,0 +1,56 @@
+{
+  "identifier": "bob-shanbay-wordbook",
+  "version": "1.0.0",
+  "category": "translate",
+  "name": "扇贝单词本",
+  "summary": "将查询的英语单词自动添加到扇贝单词本，支持自动从浏览器获取 auth_token",
+  "icon": "",
+  "author": "Cian Lu",
+  "homepage": "https://github.com/cianlu/bob-shanbay-wordbook",
+  "minBobVersion": "1.12.0",
+  "options": [
+    {
+      "identifier": "auth_token",
+      "type": "text",
+      "title": "Auth Token（手动备选）",
+      "desc": "可选。自动提取失败时使用的手动备选 token，留空则完全依赖自动提取",
+      "textConfig": {
+        "type": "secure",
+        "placeholderText": "留空则使用自动提取的 token"
+      }
+    },
+    {
+      "identifier": "word_only",
+      "type": "menu",
+      "title": "仅添加单词",
+      "desc": "开启后仅添加单个单词，不添加包含空格的词组",
+      "defaultValue": "1",
+      "menuValues": [
+        { "title": "是", "value": "1" },
+        { "title": "否", "value": "0" }
+      ]
+    },
+    {
+      "identifier": "auto_extract",
+      "type": "menu",
+      "title": "自动提取 Cookie",
+      "desc": "是否从 helper 工具提取的文件读取 auth_token",
+      "defaultValue": "1",
+      "menuValues": [
+        { "title": "是", "value": "1" },
+        { "title": "否", "value": "0" }
+      ]
+    },
+    {
+      "identifier": "show_result",
+      "type": "menu",
+      "title": "显示添加结果",
+      "desc": "是否在翻译结果中显示添加到扇贝的状态",
+      "defaultValue": "1",
+      "menuValues": [
+        { "title": "是", "value": "1" },
+        { "title": "否", "value": "0" }
+      ]
+    }
+  ]
+}
