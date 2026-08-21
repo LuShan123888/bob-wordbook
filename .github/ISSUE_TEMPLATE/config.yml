@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Bob 插件开发文档
+    url: https://bobtranslate.com/plugin/
+    about: Bob 本体或插件 API 的使用问题请先查阅官方文档。

@@ -1,0 +1,42 @@
+name: Bug report
+description: 报告可复现的问题
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 提交前请确认 helper 正在运行，并检查 Bob 与 helper 日志中是否已有明确错误。
+  - type: input
+    id: version
+    attributes:
+      label: Bob Wordbook 版本
+      placeholder: 例如 2.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: 例如 macOS 15.6 / Apple Silicon / Bob 1.20.0
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、完整的操作步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与日志
+      description: 请删除路径、用户名或其他不希望公开的信息，不要提交敏感内容。
+    validations:
+      required: true

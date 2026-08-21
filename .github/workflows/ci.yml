@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Run checks
+        run: make check
+
+      - name: Build helper and plugin
+        run: |
+          make build
+          make plugin
+          unzip -t dist/*.bobplugin
+
+      - name: Test installer without changing launchd
+        run: |
+          test_home="$RUNNER_TEMP/bob-wordbook-home"
+          mkdir -p "$test_home"
+          HOME="$test_home" BOB_WORDBOOK_SKIP_LAUNCH=1 bash scripts/install.sh bin/bob-wordbook-helper
+          test -x "$test_home/.local/bin/bob-wordbook-helper"
+          test -x "$test_home/.local/share/bob-wordbook/uninstall.sh"
+          plutil -lint "$test_home/Library/LaunchAgents/com.cian.bob-wordbook-helper.plist"
+          HOME="$test_home" BOB_WORDBOOK_SKIP_LAUNCH=1 bash "$test_home/.local/share/bob-wordbook/uninstall.sh"
+          test ! -e "$test_home/.local/bin/bob-wordbook-helper"
+          test ! -e "$test_home/Library/LaunchAgents/com.cian.bob-wordbook-helper.plist"

@@ -1,5 +1,5 @@
 {
-  "identifier": "bob-wordbook",
+  "identifier": "com.cian.bobwordbook",
   "version": "2.1.0",
   "category": "translate",
   "name": "单词本 JSONL",
@@ -7,6 +7,7 @@
   "icon": "001",
   "author": "Cian Lu",
   "homepage": "https://github.com/LuShan123888/bob-wordbook",
+  "appcast": "https://raw.githubusercontent.com/LuShan123888/bob-wordbook/main/appcast.json",
   "minBobVersion": "1.8.0",
   "options": [
     {

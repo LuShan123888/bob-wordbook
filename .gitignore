@@ -5,6 +5,8 @@
 *.swiftdoc
 *.swiftsourceinfo
 .env
+__pycache__/
+*.py[cod]
 .idea/
 /bin/
 /dist/

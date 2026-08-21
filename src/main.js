@@ -1,10 +1,20 @@
 var helperURL = "http://127.0.0.1:19820/v1/entries";
 
 function supportLanguages() {
-  return ["auto", "en", "zh-Hans"];
+  return ["auto", "en", "zh-Hans", "zh-Hant"];
 }
 
 function translate(query, completion) {
+  if (query.detectFrom && query.detectFrom !== "en") {
+    complete(query, completion, {
+      error: {
+        type: "unsupportedLanguage",
+        message: "仅支持保存英文单词或短语。"
+      }
+    });
+    return;
+  }
+
   var text = String(query.originalText || query.text || "").trim();
   if (!text) {
     complete(query, completion, {

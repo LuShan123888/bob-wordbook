@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,7 +25,10 @@ const (
 	clientHeaderName     = "X-Bob-Wordbook-Client"
 	clientHeaderValue    = "bob-plugin"
 	maxRequestBodyBytes  = 64 << 10
+	shutdownTimeout      = 5 * time.Second
 )
+
+var version = "dev"
 
 type appendRequest struct {
 	Text string `json:"text"`
@@ -53,7 +61,15 @@ type server struct {
 func main() {
 	listenAddress := flag.String("listen", defaultListenAddress, "HTTP listen address")
 	defaultPathFlag := flag.String("default-path", "", "default JSONL file path")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+	if err := validateListenAddress(*listenAddress); err != nil {
+		log.Fatalf("[main] validate listen address failed err:%v", err)
+	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -71,9 +87,41 @@ func main() {
 		log.Fatalf("[main] resolve default output path failed err:%v", err)
 	}
 
-	log.Printf("[main] start Bob Wordbook helper listen:%s, defaultPath:%s", *listenAddress, resolvedDefaultPath)
-	if err := http.ListenAndServe(*listenAddress, app.routes()); err != nil {
+	httpServer := &http.Server{
+		Addr:              *listenAddress,
+		Handler:           app.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+
+	log.Printf("[main] start Bob Wordbook helper version:%s, listen:%s, defaultPath:%s", version, *listenAddress, resolvedDefaultPath)
+	if err := serveUntilSignal(httpServer); err != nil {
 		log.Fatalf("[main] serve HTTP failed err:%v", err)
+	}
+}
+
+func serveUntilSignal(httpServer *http.Server) error {
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- httpServer.ListenAndServe()
+	}()
+
+	signalContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-signalContext.Done():
+		shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return httpServer.Shutdown(shutdownContext)
 	}
 }
 
@@ -93,7 +141,7 @@ func (s *server) routes() http.Handler {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
 }
 
 func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +151,11 @@ func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get(clientHeaderName) != clientHeaderValue {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "invalid client header"})
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{Message: "Content-Type must be application/json"})
 		return
 	}
 
@@ -207,6 +260,21 @@ func (s *server) resolvePath(configuredPath string) (string, error) {
 	}
 
 	return outputPath, nil
+}
+
+func validateListenAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("parse address: %w", err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("listen address must use a loopback host")
+	}
+	return nil
 }
 
 func ensureJSONBodyEnded(decoder *json.Decoder) error {

@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Validate version and tests
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/validate_plugin.py --expected-version "$version"
+          make check
+
+      - name: Build deterministic plugin
+        run: make plugin
+
+      - name: Build universal macOS helper
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/arch
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+            -ldflags "-s -w -X main.version=$version" \
+            -o dist/arch/bob-wordbook-helper-arm64 ./cmd/bob-wordbook-helper
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=$version" \
+            -o dist/arch/bob-wordbook-helper-amd64 ./cmd/bob-wordbook-helper
+          lipo -create \
+            dist/arch/bob-wordbook-helper-arm64 \
+            dist/arch/bob-wordbook-helper-amd64 \
+            -output dist/bob-wordbook-helper
+          codesign --force --sign - --timestamp=none dist/bob-wordbook-helper
+          file dist/bob-wordbook-helper
+          dist/bob-wordbook-helper -version
+
+      - name: Package release archive
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          package="bob-wordbook-v$version"
+          mkdir -p "dist/$package"
+          cp dist/bob-wordbook-helper "dist/$package/"
+          cp "dist/bob-wordbook-v$version.bobplugin" "dist/$package/"
+          cp scripts/install.sh scripts/uninstall.sh README.md LICENSE "dist/$package/"
+          tar -C dist -czf "dist/$package-darwin-universal.tar.gz" "$package"
+          cd dist
+          shasum -a 256 \
+            "bob-wordbook-v$version.bobplugin" \
+            "$package-darwin-universal.tar.gz" > SHA256SUMS
+
+      - name: Verify appcast artifact
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/validate_plugin.py \
+            --expected-version "$version" \
+            --artifact "dist/bob-wordbook-v$version.bobplugin"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/bob-wordbook-v$version.bobplugin" \
+            "dist/bob-wordbook-v$version-darwin-universal.tar.gz" \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --generate-notes \
+            --title "Bob Wordbook $GITHUB_REF_NAME"
