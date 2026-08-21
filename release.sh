@@ -1,17 +1,14 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-VERSION=$(python3 -c "import json; print(json.load(open('src/info.json'))['version'])" 2>/dev/null || echo "1.0.0")
-PLUGIN_NAME="bob-shanbay-wordbook"
-OUTPUT="${PLUGIN_NAME}-v${VERSION}.bobplugin"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="$(python3 -c 'import json; print(json.load(open("src/info.json"))["version"])')"
+OUTPUT_DIR="$SCRIPT_DIR/dist"
+OUTPUT_NAME="bob-wordbook-v${VERSION}.bobplugin"
 
-echo "Building ${OUTPUT}..."
-cd src
-zip -r -j "../${OUTPUT}" info.json main.js shanbay.js
-cd ..
+mkdir -p "$OUTPUT_DIR"
+cd "$SCRIPT_DIR/src"
+zip -q -r -FS "$OUTPUT_DIR/$OUTPUT_NAME" info.json main.js
 
-echo ""
-echo "SHA256:"
-shasum -a 256 "${OUTPUT}"
-echo ""
-echo "Done: ${OUTPUT}"
+echo "Built: $OUTPUT_DIR/$OUTPUT_NAME"
+shasum -a 256 "$OUTPUT_DIR/$OUTPUT_NAME"

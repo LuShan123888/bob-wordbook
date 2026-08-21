@@ -4,5 +4,7 @@
 *.o
 *.swiftdoc
 *.swiftsourceinfo
-shanbay-cookie-helper
 .env
+.idea/
+/bin/
+/dist/

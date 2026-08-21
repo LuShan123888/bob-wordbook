@@ -1,56 +1,24 @@
 {
   "identifier": "bob-wordbook",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "category": "translate",
-  "name": "单词本",
-  "summary": "将查询的英语单词自动收集到本地 Markdown 单词本和扇贝单词本",
-  "icon": "",
+  "name": "单词本 JSONL",
+  "summary": "将 Bob 接收到的英文单词或短语追加保存为本地 JSONL。",
+  "icon": "001",
   "author": "Cian Lu",
   "homepage": "https://github.com/LuShan123888/bob-wordbook",
-  "minBobVersion": "1.12.0",
+  "minBobVersion": "1.8.0",
   "options": [
     {
-      "identifier": "shanbei_auth_token",
+      "identifier": "outputPath",
       "type": "text",
-      "title": "扇贝 Auth Token（手动备选）",
-      "desc": "可选。自动提取失败时使用的手动备选 token，留空则完全依赖 helper 自动提取",
+      "title": "JSONL 文件路径",
+      "defaultValue": "~/Downloads/bob-wordbook.jsonl",
       "textConfig": {
-        "type": "secure",
-        "placeholderText": "留空则使用自动提取的 token"
-      }
-    },
-    {
-      "identifier": "word_only",
-      "type": "menu",
-      "title": "仅添加单词",
-      "desc": "开启后仅添加单个单词，不添加包含空格的词组",
-      "defaultValue": "1",
-      "menuValues": [
-        { "title": "是", "value": "1" },
-        { "title": "否", "value": "0" }
-      ]
-    },
-    {
-      "identifier": "auto_extract",
-      "type": "menu",
-      "title": "自动提取 Cookie",
-      "desc": "是否使用 helper 工具自动提取的扇贝 auth_token",
-      "defaultValue": "1",
-      "menuValues": [
-        { "title": "是", "value": "1" },
-        { "title": "否", "value": "0" }
-      ]
-    },
-    {
-      "identifier": "show_result",
-      "type": "menu",
-      "title": "显示添加结果",
-      "desc": "是否在翻译结果中显示收集状态",
-      "defaultValue": "1",
-      "menuValues": [
-        { "title": "是", "value": "1" },
-        { "title": "否", "value": "0" }
-      ]
+        "type": "visible",
+        "placeholderText": "~/Downloads/bob-wordbook.jsonl"
+      },
+      "desc": "必须是绝对路径或以 ~/ 开头，并以 .jsonl 结尾。"
     }
   ]
 }
