@@ -50,6 +50,33 @@ test("translate sends original text and returns the stored path", () => {
   );
 });
 
+test("translate accepts an English sentence", () => {
+  let called = false;
+  let completion;
+  const plugin = loadPlugin((request) => {
+    called = true;
+    request.handler({
+      data: { ok: true, path: "/Users/test/Downloads/bob-wordbook.jsonl" },
+      response: { statusCode: 201 },
+    });
+  });
+
+  plugin.translate(
+    {
+      text: "Learning English takes time.",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(called, true);
+  assert.equal(completion.error, undefined);
+});
+
 test("translate reports a helper connection failure", () => {
   let completion;
   const plugin = loadPlugin((request) => {
@@ -104,6 +131,49 @@ test("translate rejects non-English input without calling the helper", () => {
     {
       text: "你好",
       detectFrom: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(called, false);
+  assert.equal(completion.error.type, "unsupportedLanguage");
+});
+
+test("translate rejects input without an English detection result", () => {
+  let called = false;
+  let completion;
+  const plugin = loadPlugin(() => {
+    called = true;
+  });
+
+  plugin.translate(
+    {
+      text: "你好",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(called, false);
+  assert.equal(completion.error.type, "unsupportedLanguage");
+});
+
+test("translate rejects mixed Chinese and English input", () => {
+  let called = false;
+  let completion;
+  const plugin = loadPlugin(() => {
+    called = true;
+  });
+
+  plugin.translate(
+    {
+      text: "hello 你好",
+      detectFrom: "en",
       onCompletion: (value) => {
         completion = value;
       },

@@ -32,6 +32,7 @@ Bob 插件的 `$file` 只能写插件沙盒，不能直接写 Downloads 或其�
 插件源码位于 `src/`：
 
 - 优先读取 `query.originalText`，不可用时读取 `query.text`。
+- 仅当 `query.detectFrom` 为 `en`、文本包含英文字母且不含中文汉字时继续写入。
 - 从 `$option.outputPath` 读取 JSONL 文件路径。
 - 使用 `Content-Type: application/json` 调用本机辅助程序。
 - 写入成功后在 Bob 结果中显示文本和实际输出路径。
@@ -74,6 +75,7 @@ Bob 插件的 `$file` 只能写插件沙盒，不能直接写 Downloads 或其�
 
 - 空路径使用 `~/Downloads/bob-wordbook.jsonl`。
 - 配置路径必须是绝对路径或以 `~/` 开头。
+- 配置路径不得包含反斜杠，`~` 只能作为开头的 `~/` 使用；错误路径在创建目录前即被拒绝。
 - 文件扩展名必须为 `.jsonl`。
 - 不存在的父目录会以 `0755` 创建；新文件权限为 `0600`。
 - 每条记录在内存中完成 JSON 编码后，以一次追加写入落盘，并执行 `fsync` 后才返回成功。
@@ -84,6 +86,7 @@ Bob 插件的 `$file` 只能写插件沙盒，不能直接写 Downloads 或其�
 - 默认只监听 `127.0.0.1:19820`。
 - 写入请求必须携带 `X-Bob-Wordbook-Client: bob-plugin`。
 - 拒绝包含 `Origin` 的写入请求，避免普通网页向本机词库追加内容。
+- 写入前再次要求文本包含英文字母且不含中文汉字，确保中文不会越过插件直接持久化。
 - 请求体上限为 64 KiB，且只接受一个没有未知字段的 JSON 对象。
 
 ## JSONL 数据契约

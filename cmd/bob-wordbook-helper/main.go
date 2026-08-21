@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 const (
@@ -176,6 +177,10 @@ func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "text must not be empty"})
 		return
 	}
+	if err := validateEnglishText(text); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
 
 	outputPath, err := s.resolvePath(request.Path)
 	if err != nil {
@@ -239,10 +244,29 @@ func (s *server) appendEntry(outputPath string, wordbookEntry entry) error {
 	return nil
 }
 
+func validateEnglishText(text string) error {
+	hasEnglishLetter := false
+	for _, character := range text {
+		if unicode.Is(unicode.Han, character) {
+			return errors.New("text must not contain Chinese characters")
+		}
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' {
+			hasEnglishLetter = true
+		}
+	}
+	if !hasEnglishLetter {
+		return errors.New("text must contain an English letter")
+	}
+	return nil
+}
+
 func (s *server) resolvePath(configuredPath string) (string, error) {
 	outputPath := strings.TrimSpace(configuredPath)
 	if outputPath == "" {
 		outputPath = strings.TrimSpace(s.defaultPath)
+	}
+	if strings.ContainsRune(outputPath, '\\') {
+		return "", errors.New("path must not contain backslashes; enter the path without shell escaping")
 	}
 
 	if outputPath == "~" {
@@ -252,6 +276,11 @@ func (s *server) resolvePath(configuredPath string) (string, error) {
 	}
 
 	outputPath = filepath.Clean(outputPath)
+	for _, component := range strings.Split(outputPath, string(filepath.Separator)) {
+		if strings.HasPrefix(component, "~") {
+			return "", errors.New("path contains a misplaced ~; use ~ only at the beginning as ~/")
+		}
+	}
 	if !filepath.IsAbs(outputPath) {
 		return "", errors.New("path must be absolute or start with ~/")
 	}

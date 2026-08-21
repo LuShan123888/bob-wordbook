@@ -10,7 +10,7 @@ Save English words and phrases received by Bob to a local JSONL file, one record
 
 ## 特性
 
-- 单词和短语均可保存，不修改原始文本内容。
+- 只保存 Bob 检测为英文且不含中文的单词、短语或句子，不修改原始文本内容。
 - 默认写入 `~/Downloads/bob-wordbook.jsonl`，也可在 Bob 中配置其他 `.jsonl` 路径。
 - 每条记录包含原文和 RFC 3339 时间戳，适合脚本、数据库或学习工具继续处理。
 - helper 只监听本机回环地址，不会暴露为局域网服务。
@@ -97,7 +97,8 @@ bash scripts/install.sh bin/bob-wordbook-helper
 {"text":"piece of cake","created_at":"2026-08-22T10:31:12.123+08:00"}
 ```
 
-在 Bob 插件设置中修改「JSONL 文件路径」即可更换位置。路径必须是绝对路径或以 `~/` 开头，并以 `.jsonl` 结尾；不存在的父目录会自动创建。
+在 Bob 插件设置中修改「JSONL 文件路径」即可更换位置。路径必须是绝对路径或以 `~/` 开头，并以 `.jsonl` 结尾；不要输入 shell
+转义用的反斜杠，`~` 只能作为开头的 `~/` 使用。不存在的父目录会自动创建。
 
 ## 升级与卸载
 

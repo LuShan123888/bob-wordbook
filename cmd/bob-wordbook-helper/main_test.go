@@ -79,6 +79,66 @@ func TestAppendEntryExpandsHomePath(t *testing.T) {
 	}
 }
 
+func TestAppendEntryRejectsAmbiguousPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		wantMessage string
+	}{
+		{
+			name:        "home marker outside the first component",
+			path:        "~/Library/Mobile Documents/iCloud~md~obsidian/~Documents/wordbook.jsonl",
+			wantMessage: "path contains a misplaced ~; use ~ only at the beginning as ~/",
+		},
+		{
+			name:        "shell-escaped tildes",
+			path:        `~/Library/Mobile Documents/iCloud\~md\~obsidian/Documents/wordbook.jsonl`,
+			wantMessage: "path must not contain backslashes; enter the path without shell escaping",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			app := newServer(filepath.Join(tempDir, "default.jsonl"), tempDir)
+
+			response := postEntry(t, app.routes(), appendRequest{Text: "Section", Path: test.path})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status code = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			var body errorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Message != test.wantMessage {
+				t.Fatalf("error message = %q, want %q", body.Message, test.wantMessage)
+			}
+			if _, err := os.Stat(filepath.Join(tempDir, "Library")); !os.IsNotExist(err) {
+				t.Fatalf("invalid path created an output directory: %v", err)
+			}
+		})
+	}
+}
+
+func TestAppendEntryRejectsNonEnglishText(t *testing.T) {
+	tests := []string{"你好", "hello 你好", "12345"}
+	for _, text := range tests {
+		t.Run(text, func(t *testing.T) {
+			tempDir := t.TempDir()
+			outputPath := filepath.Join(tempDir, "wordbook.jsonl")
+			app := newServer(outputPath, tempDir)
+
+			response := postEntry(t, app.routes(), appendRequest{Text: text})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status code = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+				t.Fatalf("non-English input created an output file: %v", err)
+			}
+		})
+	}
+}
+
 func TestAppendEntryRejectsInvalidRequests(t *testing.T) {
 	tempDir := t.TempDir()
 	app := newServer(filepath.Join(tempDir, "default.jsonl"), tempDir)

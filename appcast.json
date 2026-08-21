@@ -4,7 +4,7 @@
     {
       "version": "2.1.0",
       "desc": "改为本地 JSONL 存储，新增 Go helper、自动启动安装器和完整发布流程。",
-      "sha256": "1ee2f95c490514b6d66a3ba2a957d440e3123895f3db7777185a3acf7e95166d",
+      "sha256": "34b7493be4c6125d7e476c0715c2bf578973e1388bc117c8736211c6d42b13a5",
       "url": "https://github.com/LuShan123888/bob-wordbook/releases/download/v2.1.0/bob-wordbook-v2.1.0.bobplugin",
       "minBobVersion": "1.8.0"
     }

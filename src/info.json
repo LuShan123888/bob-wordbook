@@ -19,7 +19,7 @@
         "type": "visible",
         "placeholderText": "~/Downloads/bob-wordbook.jsonl"
       },
-      "desc": "必须是绝对路径或以 ~/ 开头，并以 .jsonl 结尾。"
+      "desc": "必须是绝对路径或以 ~/ 开头，并以 .jsonl 结尾；不要输入反斜杠，~ 只能出现在开头。"
     }
   ]
 }

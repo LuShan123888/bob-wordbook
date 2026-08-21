@@ -5,22 +5,22 @@ function supportLanguages() {
 }
 
 function translate(query, completion) {
-  if (query.detectFrom && query.detectFrom !== "en") {
-    complete(query, completion, {
-      error: {
-        type: "unsupportedLanguage",
-        message: "仅支持保存英文单词或短语。"
-      }
-    });
-    return;
-  }
-
   var text = String(query.originalText || query.text || "").trim();
   if (!text) {
     complete(query, completion, {
       error: {
         type: "param",
         message: "没有可保存的单词或短语。"
+      }
+    });
+    return;
+  }
+
+  if (query.detectFrom !== "en" || !/[A-Za-z]/.test(text) || /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text)) {
+    complete(query, completion, {
+      error: {
+        type: "unsupportedLanguage",
+        message: "仅支持保存 Bob 检测为英文且不含中文的单词、短语或句子。"
       }
     });
     return;
