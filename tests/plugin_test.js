@@ -93,7 +93,7 @@ test("translate streams AIHubMix output and persists the completed English resul
     request: (request) => {
       helperRequest = request;
       request.handler({
-        data: { ok: true, path: "/Users/test/Downloads/bob-wordbook.jsonl" },
+        data: { ok: true, path: "/Users/test/Library/Mobile Documents/bob-wordbook.jsonl" },
         response: { statusCode: 201 },
       });
     },
@@ -133,8 +133,15 @@ test("translate streams AIHubMix output and persists the completed English resul
     path: "~/Downloads/bob-wordbook.jsonl",
   });
   assert.equal(completion.result.toParagraphs[0], "释义\n小菜一碟");
-  assert.match(completion.result.toParagraphs[1], /已保存到单词本/);
+  assert.equal(
+    completion.result.toParagraphs[1],
+    "✓ 已保存到单词本：/Users/test/Library/Mobile\\ Documents/bob-wordbook.jsonl",
+  );
   assert.equal(completion.result.raw.saved, true);
+  assert.equal(
+    completion.result.raw.path,
+    "/Users/test/Library/Mobile Documents/bob-wordbook.jsonl",
+  );
 });
 
 test("translate sends an explicitly selected AIHubMix reasoning effort", () => {

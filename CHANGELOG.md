@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- 保存成功提示中的空格使用终端转义形式展示，路径可直接复制到命令行中使用；实际写入路径保持不变。
 - 修复 helper 由 LaunchAgent 启动时，Codex App Server 首次建立线程可能在 macOS Keychain 证书枚举阶段阻塞数十秒的问题。
 - App Server 建立线程和回合超过 10 秒时立即失败并重建进程，避免 Bob 持续停留在“生成中”。
 

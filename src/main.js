@@ -578,7 +578,7 @@ function persistLearningEntry(query, config, text, resultText, wordResult, callb
 function finishTranslation(state, query, completion, config, resultText, wordResult, saveResult) {
   var paragraphs = wordResult ? [] : [resultText];
   if (saveResult.saved) {
-    paragraphs.push("✓ 已保存到单词本：" + saveResult.path);
+    paragraphs.push("✓ 已保存到单词本：" + formatPathForTerminal(saveResult.path));
   } else if (saveResult.message) {
     paragraphs.push("⚠ 单词本保存失败：" + saveResult.message);
   }
@@ -602,6 +602,10 @@ function finishTranslation(state, query, completion, config, resultText, wordRes
     result.toDict = buildBobDictionary(wordResult);
   }
   completeOnce(state, query, completion, { result: result });
+}
+
+function formatPathForTerminal(path) {
+  return String(path || "").replace(/ /g, "\\ ");
 }
 
 function drainSSEBuffer(state, query, flush) {
