@@ -1,6 +1,6 @@
 var aiHubMixURL = "https://aihubmix.com/v1/chat/completions";
 var helperURL = "http://127.0.0.1:19820/v3/entries";
-var codexTranslateURL = "http://127.0.0.1:19820/v1/codex/translate";
+var codexTranslateStreamURL = "http://127.0.0.1:19820/v1/codex/translate/stream";
 var codexStatusURL = "http://127.0.0.1:19820/v1/codex/status";
 
 function supportLanguages() {
@@ -19,6 +19,8 @@ function translate(query, completion) {
     wordLookup: isSingleEnglishWord(query, text),
     sawDone: false,
     streamError: "",
+    codexBuffer: "",
+    codexResponse: null,
     requestFinished: false,
     completed: false
   };
@@ -50,6 +52,23 @@ function translate(query, completion) {
 
 function translateWithAIHubMix(state, query, completion, config, text) {
   try {
+    var requestBody = {
+      model: config.model,
+      messages: [
+        {
+          role: "system",
+          content: buildSystemPrompt(query, text, config.systemPrompt)
+        },
+        {
+          role: "user",
+          content: text
+        }
+      ],
+      stream: true
+    };
+    if (config.aiHubMixReasoningEffort !== "auto") {
+      requestBody.reasoning_effort = config.aiHubMixReasoningEffort;
+    }
     $http.streamRequest({
       method: "POST",
       url: aiHubMixURL,
@@ -57,20 +76,7 @@ function translateWithAIHubMix(state, query, completion, config, text) {
         "Authorization": "Bearer " + config.apiKey,
         "Content-Type": "application/json"
       },
-      body: {
-        model: config.model,
-        messages: [
-          {
-            role: "system",
-            content: buildSystemPrompt(query, text, config.systemPrompt)
-          },
-          {
-            role: "user",
-            content: text
-          }
-        ],
-        stream: true
-      },
+      body: requestBody,
       timeout: 110,
       cancelSignal: query.cancelSignal,
       streamHandler: function(stream) {
@@ -206,9 +212,10 @@ function validateLocalCodex(completion) {
 
 function translateWithLocalCodex(state, query, completion, config, text) {
   try {
-    $http.request({
+    emitLocalCodexProgress(query, "正在连接本地 Codex…");
+    $http.streamRequest({
       method: "POST",
-      url: codexTranslateURL,
+      url: codexTranslateStreamURL,
       header: {
         "Content-Type": "application/json",
         "X-Bob-Wordbook-Client": "bob-plugin"
@@ -216,15 +223,26 @@ function translateWithLocalCodex(state, query, completion, config, text) {
       body: {
         text: text,
         kind: state.wordLookup ? "word" : "text",
-        system_prompt: buildSystemPrompt(query, text, config.systemPrompt),
+        system_prompt: buildSystemPrompt(query, text, config.systemPrompt, false),
         model: config.codexModel,
         reasoning_effort: config.codexReasoningEffort,
         service_tier: config.codexServiceTier
       },
       timeout: 110,
       cancelSignal: query.cancelSignal,
+      streamHandler: function(stream) {
+        if (state.requestFinished || state.streamError || !stream.text) {
+          return;
+        }
+        try {
+          state.codexBuffer += String(stream.text);
+          drainLocalCodexStream(state, query, false);
+        } catch (error) {
+          state.streamError = errorMessage(error, "本地 Codex 返回了无法解析的流式数据。");
+        }
+      },
       handler: function(resp) {
-        handleLocalCodexCompletion(state, query, completion, config, text, resp);
+        handleLocalCodexStreamCompletion(state, query, completion, config, text, resp);
       }
     });
   } catch (error) {
@@ -236,6 +254,129 @@ function translateWithLocalCodex(state, query, completion, config, text) {
       }
     });
   }
+}
+
+function handleLocalCodexStreamCompletion(state, query, completion, config, text, resp) {
+  if (state.requestFinished) {
+    return;
+  }
+  state.requestFinished = true;
+
+  try {
+    drainLocalCodexStream(state, query, true);
+  } catch (error) {
+    state.streamError = errorMessage(error, "本地 Codex 返回了无法解析的流式数据。");
+  }
+
+  if (resp.error) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "network",
+        message: "本地 Codex 请求失败。",
+        addition: errorMessage(resp.error, "未知网络错误")
+      }
+    });
+    return;
+  }
+
+  var statusCode = resp.response ? resp.response.statusCode : 0;
+  if (statusCode < 200 || statusCode >= 300) {
+    var statusMessage = statusCode === 404 ? "helper 版本过旧，请升级后再使用本地 Codex。" : "本地 Codex 翻译失败。";
+    completeOnce(state, query, completion, {
+      error: {
+        type: "api",
+        message: statusMessage,
+        addition: state.streamError || "HTTP " + statusCode
+      }
+    });
+    return;
+  }
+  if (state.streamError) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "api",
+        message: "本地 Codex 翻译失败。",
+        addition: state.streamError
+      }
+    });
+    return;
+  }
+  if (!state.codexResponse) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "api",
+        message: "本地 Codex 响应未正常完成，已丢弃不完整结果。"
+      }
+    });
+    return;
+  }
+
+  handleLocalCodexCompletion(state, query, completion, config, text, {
+    data: state.codexResponse,
+    response: resp.response
+  });
+}
+
+function drainLocalCodexStream(state, query, finalChunk) {
+  var lineEnd = state.codexBuffer.indexOf("\n");
+  while (lineEnd >= 0) {
+    var line = state.codexBuffer.slice(0, lineEnd).trim();
+    state.codexBuffer = state.codexBuffer.slice(lineEnd + 1);
+    if (line) {
+      handleLocalCodexEvent(state, query, line);
+    }
+    lineEnd = state.codexBuffer.indexOf("\n");
+  }
+  if (finalChunk && state.codexBuffer.trim()) {
+    handleLocalCodexEvent(state, query, state.codexBuffer.trim());
+    state.codexBuffer = "";
+  }
+}
+
+function handleLocalCodexEvent(state, query, line) {
+  var event = JSON.parse(line);
+  if (event.type === "status") {
+    emitLocalCodexProgress(query, event.message || "本地 Codex 正在生成翻译…");
+    return;
+  }
+  if (event.type === "delta" && event.delta) {
+    state.text += String(event.delta);
+    emitLocalCodexText(query, state.text);
+    return;
+  }
+  if (event.type === "result" && event.data && event.data.ok) {
+    state.codexResponse = event.data;
+    return;
+  }
+  if (event.type === "error") {
+    state.streamError = String(event.message || "本地 Codex 返回未知错误。");
+    return;
+  }
+  if (!event.type && event.message) {
+    state.streamError = String(event.message);
+  }
+}
+
+function emitLocalCodexText(query, text) {
+  if (typeof query.onStream !== "function") {
+    return;
+  }
+  query.onStream({
+    from: query.detectFrom,
+    to: query.detectTo,
+    toParagraphs: [formatForBob(text)]
+  });
+}
+
+function emitLocalCodexProgress(query, message) {
+  if (typeof query.onStream !== "function") {
+    return;
+  }
+  query.onStream({
+    from: query.detectFrom,
+    to: query.detectTo,
+    toParagraphs: [message]
+  });
 }
 
 function handleLocalCodexCompletion(state, query, completion, config, text, resp) {
@@ -523,8 +664,9 @@ function readConfig() {
     provider: String($option.provider || "aihubmix").trim(),
     apiKey: String($option.apiKey || "").trim(),
     model: String($option.model || "").trim(),
-    codexModel: String($option.codexModel || "gpt-5.6-terra").trim(),
-    codexReasoningEffort: String($option.codexReasoningEffort || "low").trim(),
+    aiHubMixReasoningEffort: String($option.aiHubMixReasoningEffort || "auto").trim(),
+    codexModel: String($option.codexModel || "gpt-5.6-luna").trim(),
+    codexReasoningEffort: String($option.codexReasoningEffort || "none").trim(),
     codexServiceTier: String($option.codexServiceTier || "standard").trim(),
     systemPrompt: String($option.systemPrompt || "").trim(),
     outputPath: String($option.outputPath || "").trim()
@@ -545,7 +687,7 @@ function validateConfig(config) {
         message: "请先在插件设置中填写 Codex 模型名称。"
       };
     }
-    if (["low", "medium", "high", "xhigh", "max"].indexOf(config.codexReasoningEffort) < 0) {
+    if (["none", "low", "medium", "high", "xhigh", "max"].indexOf(config.codexReasoningEffort) < 0) {
       return {
         type: "param",
         message: "请选择有效的 Codex 思考深度。"
@@ -571,6 +713,12 @@ function validateConfig(config) {
       message: "请先在插件设置中填写 AIHubMix 模型名称。"
     };
   }
+  if (["auto", "none", "minimal", "low", "medium", "high", "xhigh"].indexOf(config.aiHubMixReasoningEffort) < 0) {
+    return {
+      type: "param",
+      message: "请选择有效的 AIHubMix 思考深度。"
+    };
+  }
   return null;
 }
 
@@ -582,12 +730,12 @@ function providerDisplayName(provider) {
   return provider === "local_codex" ? "本地 Codex" : "AIHubMix";
 }
 
-function buildSystemPrompt(query, text, configuredPrompt) {
+function buildSystemPrompt(query, text, configuredPrompt, includeWordContract) {
   var prompt = configuredPrompt || defaultSystemPrompt(query);
   prompt = replacePromptVariable(prompt, /\$query\.text/g, text);
   prompt = replacePromptVariable(prompt, /\$query\.detectFromLang/g, languageName(query.detectFrom));
   prompt = replacePromptVariable(prompt, /\$query\.detectToLang/g, languageName(query.detectTo));
-  if (isSingleEnglishWord(query, text)) {
+  if (includeWordContract !== false && isSingleEnglishWord(query, text)) {
     prompt += "\n\n" + wordOutputContract();
   }
   return prompt;

@@ -9,7 +9,7 @@
 ## 特性
 
 - 可选择 AIHubMix 或本地 Codex；本地 Codex 可使用 ChatGPT 账号登录，不需要额外配置 AIHubMix API Key。
-- 本地 Codex 支持自定义模型、`low` 至 `max` 思考深度，以及 Standard/Fast 速度模式。
+- AIHubMix 和本地 Codex 均可独立配置思考深度；本地 Codex 还支持 Standard/Fast 速度模式。
 - 单个 Bob 服务同时完成翻译和本地单词本持久化，不读取 Bob 内部数据库。
 - 英文单词使用 Bob 原生词典界面；短语和句子使用适合连续阅读的纯文本结果。
 - 单词只展示音标、核心释义和一条例句；更多结构化学习内容保存在 JSONL 中。
@@ -87,15 +87,16 @@ make plugin
 bash scripts/install.sh bin/bob-wordbook-helper
 ```
 
-然后双击 `dist/bob-wordbook-v3.2.0.bobplugin`。
+然后双击 `dist/bob-wordbook-v3.4.1.bobplugin`。
 
 ## 配置
 
 - 翻译服务：默认 AIHubMix，也可选择本地 Codex。
 - AIHubMix API Key：选择 AIHubMix 时必填，仅用于请求 `https://aihubmix.com/v1/chat/completions`。
 - AIHubMix 模型：默认 `gpt-4o-mini`；可填写 AIHubMix 模型广场中的其他模型 ID。
-- Codex 模型：默认 `gpt-5.6-terra`，必须对当前登录账号可用。
-- Codex 思考深度：默认 `low`；支持 `low`、`medium`、`high`、`xhigh` 和 `max`。
+- AIHubMix 思考深度：默认 Auto，不发送 `reasoning_effort`；也可选择 `none`、`minimal`、`low`、`medium`、`high` 或 `xhigh`。具体档位是否生效取决于模型。
+- Codex 模型：默认 `gpt-5.6-luna`，适合低延迟日常翻译；优先质量可使用 `gpt-5.6-terra`。模型必须对当前登录账号可用。
+- Codex 思考深度：默认 `none`；支持 `none`、`low`、`medium`、`high`、`xhigh` 和 `max`。日常翻译使用 `none` 延迟最低，复杂语法分析可使用 `low` 或更高。
 - Codex 速度模式：默认 Standard；Fast 延迟更低，但会消耗更多套餐用量。
 - System Prompt：可选；留空使用内置英语学习 Prompt。
 - JSONL 文件路径：默认 `~/Downloads/bob-wordbook.jsonl`。
@@ -109,7 +110,7 @@ codex login
 codex login status
 ```
 
-helper 会依次查找 `/opt/homebrew/bin/codex`、`/usr/local/bin/codex`、`~/.local/bin/codex` 和当前 `PATH`。翻译时使用临时工作目录、只读沙箱和临时会话，并禁用 Shell、浏览器、Apps、图片生成及多 Agent 工具。首次实现等待结构化结果完整返回，不提供流式中间文本。
+helper 会依次查找 `/opt/homebrew/bin/codex`、`/usr/local/bin/codex`、`~/.local/bin/codex` 和当前 `PATH`。helper 启动时会预热并复用一个 Codex App Server；每次翻译仍创建独立临时目录和临时线程，并使用只读沙箱，同时禁用 Shell、浏览器、Apps、MCP、Hooks、Plugins、技能搜索、图片生成及多 Agent 工具。短语和句子会从首段真实文本开始流式展示，单词则等结构化内容完整校验后使用 Bob 原生词典渲染并保存。
 
 自定义 Prompt 支持 Bob 常用变量：
 
@@ -131,7 +132,7 @@ helper 会依次查找 `/opt/homebrew/bin/codex`、`/usr/local/bin/codex`、`~/.
 
 ## 升级与卸载
 
-升级时必须同时运行新 Release 中的 `install.sh` 并安装新的 `.bobplugin`。本地 Codex 需要 3.2.0 或更高版本的插件和 helper；只升级其中一项将无法使用该服务。原有 AIHubMix 配置继续兼容。
+升级时必须同时运行新 Release 中的 `install.sh` 并安装新的 `.bobplugin`。本地 Codex 的真实文本流式展示和常驻 App Server 优化需要 3.4.0 或更高版本；LaunchAgent 环境下的证书冷启动修复需要 helper 3.4.1 或更高版本。旧版插件与 helper 可继续配合兼容接口使用，原有 AIHubMix 配置继续兼容。
 
 卸载 helper：
 
@@ -162,7 +163,7 @@ tail -n 100 ~/Library/Logs/bob-wordbook/stderr.log
 - `请先填写 AIHubMix API Key`：在插件设置中填写有效密钥并点击验证。
 - `AIHubMix 流式响应未正常完成`：请求中途断开，插件不会保存不完整结果，可重试。
 - `本地 Codex 尚不可用`：运行 `codex login status`，并确认 helper 能找到 Codex CLI。
-- `Codex translation timed out`：降低思考深度或重试；日常翻译建议使用 `low`。
+- `Codex translation timed out`：降低思考深度或重试；日常翻译建议使用 `none`。
 - 本地 Codex 返回模型不可用：将 Codex 模型改成当前 ChatGPT 账号可用的模型。
 - `无法连接 Wordbook 本地辅助程序`：helper 未运行或端口 `19820` 被占用；译文仍会显示，但不会落盘。
 - `path must point to a .jsonl file`：配置路径不是 `.jsonl` 文件。

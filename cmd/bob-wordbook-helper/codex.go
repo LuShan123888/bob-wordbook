@@ -1,22 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	defaultCodexTimeout = 100 * time.Second
-	maxCodexErrorBytes  = 2 << 10
+	defaultCodexTimeout      = 100 * time.Second
+	defaultCodexSetupTimeout = 10 * time.Second
+	maxCodexErrorBytes       = 2 << 10
+	maxCodexEventBytes       = 2 << 20
 )
 
 type codexTranslateRequest struct {
@@ -43,17 +48,45 @@ type codexStatusResponse struct {
 	Message       string `json:"message,omitempty"`
 }
 
+type codexStreamEvent struct {
+	Type    string                  `json:"type"`
+	Stage   string                  `json:"stage,omitempty"`
+	Message string                  `json:"message,omitempty"`
+	Delta   string                  `json:"delta,omitempty"`
+	Data    *codexTranslateResponse `json:"data,omitempty"`
+}
+
+type codexProgress struct {
+	Stage string
+	Delta string
+}
+
+type codexExecEvent struct {
+	Type    string          `json:"type"`
+	Message string          `json:"message,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+	Item    struct {
+		Type string `json:"type"`
+	} `json:"item,omitempty"`
+}
+
 type codexService struct {
-	path    string
-	timeout time.Duration
-	slots   chan struct{}
+	path         string
+	homeDir      string
+	timeout      time.Duration
+	setupTimeout time.Duration
+	slots        chan struct{}
+	appServerMu  sync.Mutex
+	appServer    *codexAppServer
 }
 
 func newCodexService(homeDir string) *codexService {
 	return &codexService{
-		path:    findCodexPath(homeDir),
-		timeout: defaultCodexTimeout,
-		slots:   make(chan struct{}, 1),
+		path:         findCodexPath(homeDir),
+		homeDir:      homeDir,
+		timeout:      defaultCodexTimeout,
+		setupTimeout: defaultCodexSetupTimeout,
+		slots:        make(chan struct{}, 1),
 	}
 }
 
@@ -88,17 +121,25 @@ func (s *server) handleCodexTranslate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestID := s.codexRequestSequence.Add(1)
+	startedAt := s.now()
+	logCodexRequestStarted(requestID, request)
 	contextWithTimeout, cancel := context.WithTimeout(r.Context(), s.codex.timeout)
 	defer cancel()
-	content, err := s.codex.translate(contextWithTimeout, request)
+	content, err := s.codex.translateExec(contextWithTimeout, request, requestID, nil)
 	if err != nil {
+		logCodexRequestFinished(requestID, startedAt, err)
 		if errors.Is(err, context.DeadlineExceeded) {
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse{Message: "Codex translation timed out"})
+			return
+		}
+		if errors.Is(err, context.Canceled) {
 			return
 		}
 		writeJSON(w, http.StatusBadGateway, errorResponse{Message: err.Error()})
 		return
 	}
+	logCodexRequestFinished(requestID, startedAt, nil)
 
 	writeJSON(w, http.StatusOK, codexTranslateResponse{
 		OK:      true,
@@ -106,6 +147,82 @@ func (s *server) handleCodexTranslate(w http.ResponseWriter, r *http.Request) {
 		Content: content,
 		Model:   request.Model,
 	})
+}
+
+func (s *server) handleCodexTranslateStream(w http.ResponseWriter, r *http.Request) {
+	var request codexTranslateRequest
+	if !decodeAppendRequest(w, r, &request) {
+		return
+	}
+	if err := normalizeCodexTranslateRequest(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+	if s.codex.path == "" {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Message: "Codex CLI is not installed"})
+		return
+	}
+
+	select {
+	case s.codex.slots <- struct{}{}:
+		defer func() { <-s.codex.slots }()
+	default:
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{Message: "another Codex translation is already running"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	requestID := s.codexRequestSequence.Add(1)
+	startedAt := s.now()
+	logCodexRequestStarted(requestID, request)
+	if err := writeCodexStreamEvent(w, codexStreamEvent{
+		Type: "status", Stage: "starting", Message: "正在启动本地 Codex…",
+	}); err != nil {
+		logCodexRequestFinished(requestID, startedAt, context.Canceled)
+		return
+	}
+
+	contextWithTimeout, cancel := context.WithTimeout(r.Context(), s.codex.timeout)
+	defer cancel()
+	progress := func(update codexProgress) {
+		if update.Delta != "" {
+			if err := writeCodexStreamEvent(w, codexStreamEvent{Type: "delta", Delta: update.Delta}); err != nil {
+				cancel()
+			}
+			return
+		}
+		stage := update.Stage
+		message := "本地 Codex 正在生成翻译…"
+		if stage == "formatting" {
+			message = "正在整理翻译结果…"
+		}
+		if err := writeCodexStreamEvent(w, codexStreamEvent{Type: "status", Stage: stage, Message: message}); err != nil {
+			cancel()
+		}
+	}
+	content, err := s.codex.translateAppServer(contextWithTimeout, request, requestID, progress)
+	if err != nil {
+		logCodexRequestFinished(requestID, startedAt, err)
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		message := err.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			message = "Codex translation timed out"
+		}
+		if writeErr := writeCodexStreamEvent(w, codexStreamEvent{Type: "error", Message: message}); writeErr != nil {
+			log.Printf("[codex.translate] handle write error event failed requestID:%d, err:%v", requestID, writeErr)
+		}
+		return
+	}
+
+	response := codexTranslateResponse{OK: true, Kind: request.Kind, Content: content, Model: request.Model}
+	if err := writeCodexStreamEvent(w, codexStreamEvent{Type: "result", Data: &response}); err != nil {
+		logCodexRequestFinished(requestID, startedAt, context.Canceled)
+		return
+	}
+	logCodexRequestFinished(requestID, startedAt, nil)
 }
 
 func (c *codexService) status(ctx context.Context) (int, codexStatusResponse) {
@@ -137,14 +254,16 @@ func (c *codexService) status(ctx context.Context) (int, codexStatusResponse) {
 	}
 }
 
-func (c *codexService) translate(ctx context.Context, request codexTranslateRequest) (learningContent, error) {
+func (c *codexService) translateExec(ctx context.Context, request codexTranslateRequest, requestID uint64,
+	progress func(codexProgress),
+) (learningContent, error) {
 	workingDir, err := os.MkdirTemp("", "bob-wordbook-codex-")
 	if err != nil {
 		return learningContent{}, fmt.Errorf("create isolated Codex directory: %w", err)
 	}
 	defer func() {
 		if removeErr := os.RemoveAll(workingDir); removeErr != nil {
-			fmt.Fprintf(os.Stderr, "[codex.translate] remove temporary directory failed err:%v\n", removeErr)
+			log.Printf("[codex.translate] translate remove temporary directory failed requestID:%d, err:%v", requestID, removeErr)
 		}
 	}()
 
@@ -169,6 +288,8 @@ func (c *codexService) translate(ctx context.Context, request codexTranslateRequ
 		"--model", request.Model,
 		"--config", fmt.Sprintf("model_reasoning_effort=%q", request.ReasoningEffort),
 		"--output-schema", schemaPath,
+		"--json",
+		"--output-last-message", filepath.Join(workingDir, "result.json"),
 		"--color", "never",
 	}
 	if request.ServiceTier == "fast" {
@@ -179,23 +300,76 @@ func (c *codexService) translate(ctx context.Context, request codexTranslateRequ
 	command := exec.CommandContext(ctx, c.path, arguments...)
 	command.Dir = workingDir
 	command.Stdin = strings.NewReader(buildCodexPrompt(request))
-	var standardOutput bytes.Buffer
 	var standardError bytes.Buffer
-	command.Stdout = &standardOutput
 	command.Stderr = &standardError
-	if err := command.Run(); err != nil {
+	standardOutput, err := command.StdoutPipe()
+	if err != nil {
+		return learningContent{}, fmt.Errorf("open Codex stdout: %w", err)
+	}
+	if err := command.Start(); err != nil {
+		if ctx.Err() != nil {
+			return learningContent{}, ctx.Err()
+		}
+		return learningContent{}, fmt.Errorf("start Codex CLI: %w", err)
+	}
+	log.Printf("[codex.translate] translate Codex CLI started requestID:%d, pid:%d", requestID, command.Process.Pid)
+
+	scanner := bufio.NewScanner(standardOutput)
+	scanner.Buffer(make([]byte, 64<<10), maxCodexEventBytes)
+	var eventErr error
+	var codexErrorMessage string
+	for scanner.Scan() {
+		var event codexExecEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			if eventErr == nil {
+				eventErr = fmt.Errorf("decode Codex event: %w", err)
+			}
+			continue
+		}
+		switch event.Type {
+		case "thread.started":
+			log.Printf("[codex.translate] translate Codex thread started requestID:%d", requestID)
+		case "turn.started":
+			log.Printf("[codex.translate] translate Codex turn started requestID:%d", requestID)
+			if progress != nil {
+				progress(codexProgress{Stage: "generating"})
+			}
+		case "item.completed":
+			if event.Item.Type == "agent_message" && progress != nil {
+				progress(codexProgress{Stage: "formatting"})
+			}
+		case "turn.completed":
+			log.Printf("[codex.translate] translate Codex turn completed requestID:%d", requestID)
+		case "turn.failed", "error":
+			codexErrorMessage = codexExecErrorMessage(event)
+			log.Printf("[codex.translate] translate Codex event failed requestID:%d, eventType:%s, err:%q",
+				requestID, event.Type, codexErrorMessage)
+		}
+	}
+	if err := scanner.Err(); err != nil && eventErr == nil {
+		eventErr = fmt.Errorf("read Codex events: %w", err)
+	}
+	if err := command.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return learningContent{}, ctx.Err()
 		}
 		errorOutput := standardError.Bytes()
 		if len(bytes.TrimSpace(errorOutput)) == 0 {
-			errorOutput = standardOutput.Bytes()
+			errorOutput = []byte(codexErrorMessage)
 		}
 		return learningContent{}, fmt.Errorf("Codex CLI failed: %s", trimCodexError(errorOutput))
 	}
+	if eventErr != nil {
+		return learningContent{}, eventErr
+	}
 
+	resultPath := filepath.Join(workingDir, "result.json")
+	result, err := os.ReadFile(resultPath)
+	if err != nil {
+		return learningContent{}, fmt.Errorf("read Codex result: %w", err)
+	}
 	var content learningContent
-	if err := json.Unmarshal(bytes.TrimSpace(standardOutput.Bytes()), &content); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(result), &content); err != nil {
 		return learningContent{}, fmt.Errorf("decode Codex result: %w", err)
 	}
 	if request.Kind == "word" {
@@ -206,6 +380,55 @@ func (c *codexService) translate(ctx context.Context, request codexTranslateRequ
 		return learningContent{}, fmt.Errorf("validate Codex result: %w", err)
 	}
 	return normalizedContent, nil
+}
+
+func writeCodexStreamEvent(w http.ResponseWriter, event codexStreamEvent) error {
+	if err := json.NewEncoder(w).Encode(event); err != nil {
+		return err
+	}
+	return http.NewResponseController(w).Flush()
+}
+
+func logCodexRequestStarted(requestID uint64, request codexTranslateRequest) {
+	log.Printf("[codex.translate] handle request started requestID:%d, kind:%s, model:%q, reasoningEffort:%s, serviceTier:%s",
+		requestID, request.Kind, request.Model, request.ReasoningEffort, request.ServiceTier)
+}
+
+func logCodexRequestFinished(requestID uint64, startedAt time.Time, err error) {
+	duration := time.Since(startedAt).Round(time.Millisecond)
+	if err == nil {
+		log.Printf("[codex.translate] handle request completed requestID:%d, duration:%s", requestID, duration)
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		log.Printf("[codex.translate] handle request canceled requestID:%d, duration:%s", requestID, duration)
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		log.Printf("[codex.translate] handle request timed out requestID:%d, duration:%s", requestID, duration)
+		return
+	}
+	log.Printf("[codex.translate] handle request failed requestID:%d, duration:%s, err:%v", requestID, duration, err)
+}
+
+func codexExecErrorMessage(event codexExecEvent) string {
+	if event.Message != "" {
+		return event.Message
+	}
+	if len(event.Error) == 0 {
+		return "unknown error"
+	}
+	var object struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(event.Error, &object); err == nil && object.Message != "" {
+		return object.Message
+	}
+	var message string
+	if err := json.Unmarshal(event.Error, &message); err == nil && message != "" {
+		return message
+	}
+	return trimCodexError(event.Error)
 }
 
 func normalizeCodexTranslateRequest(request *codexTranslateRequest) error {
@@ -228,7 +451,7 @@ func normalizeCodexTranslateRequest(request *codexTranslateRequest) error {
 		return errors.New("model must not be empty")
 	}
 	if !isCodexReasoningEffort(request.ReasoningEffort) {
-		return errors.New("reasoning_effort must be low, medium, high, xhigh, or max")
+		return errors.New("reasoning_effort must be none, low, medium, high, xhigh, or max")
 	}
 	if request.ServiceTier != "standard" && request.ServiceTier != "fast" {
 		return errors.New("service_tier must be standard or fast")
@@ -269,7 +492,7 @@ func findCodexPath(homeDir string) string {
 
 func isCodexReasoningEffort(value string) bool {
 	switch value {
-	case "low", "medium", "high", "xhigh", "max":
+	case "none", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false
@@ -298,13 +521,13 @@ func codexOutputSchema(kind string) string {
 	}
 	return `{"type":"object","additionalProperties":false,"required":["word","phonetics","parts","collocations","examples"],"properties":{` +
 		`"word":{"type":"string"},` +
-		`"phonetics":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["type","value"],` +
+		`"phonetics":{"type":"array","maxItems":2,"items":{"type":"object","additionalProperties":false,"required":["type","value"],` +
 		`"properties":{"type":{"type":"string","enum":["us","uk"]},"value":{"type":"string"}}}},` +
-		`"parts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["part","means"],` +
-		`"properties":{"part":{"type":"string"},"means":{"type":"array","items":{"type":"string"}}}}},` +
-		`"collocations":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["text","meaning"],` +
+		`"parts":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["part","means"],` +
+		`"properties":{"part":{"type":"string"},"means":{"type":"array","maxItems":4,"items":{"type":"string"}}}}},` +
+		`"collocations":{"type":"array","maxItems":3,"items":{"type":"object","additionalProperties":false,"required":["text","meaning"],` +
 		`"properties":{"text":{"type":"string"},"meaning":{"type":"string"}}}},` +
-		`"examples":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["text","translation"],` +
+		`"examples":{"type":"array","maxItems":2,"items":{"type":"object","additionalProperties":false,"required":["text","translation"],` +
 		`"properties":{"text":{"type":"string"},"translation":{"type":"string"}}}}}}`
 }
 

@@ -2,7 +2,56 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号采用语义化版本。
 
-## [3.2.0] - Unreleased
+## [3.4.1] - Unreleased
+
+### Fixed
+
+- 修复 helper 由 LaunchAgent 启动时，Codex App Server 首次建立线程可能在 macOS Keychain 证书枚举阶段阻塞数十秒的问题。
+- App Server 建立线程和回合超过 10 秒时立即失败并重建进程，避免 Bob 持续停留在“生成中”。
+
+### Changed
+
+- AIHubMix 新增独立思考深度配置；默认 Auto 不发送 `reasoning_effort`，显式选择时才向统一推理接口透传。
+- 本地 Codex 新增并默认使用 GPT-5.6 支持的 `none` 思考深度，减少日常翻译的推理耗时；复杂语法分析仍可选择 `low` 或更高。
+- 新安装默认使用更适合低延迟日常翻译的 `gpt-5.6-luna`；原有模型配置保持不变。
+- 单词 JSON Schema 直接限制音标、词性、释义、搭配和例句数量，减少无效输出并避免完整生成后才因内容超限而失败。
+
+## [3.4.0] - 2026-08-22
+
+### Added
+
+- 短语和句子的本地 Codex 翻译会把真实文本增量直接流式展示在 Bob 中。
+- helper 启动时预热常驻 Codex App Server，并记录首段文本耗时。
+
+### Changed
+
+- 流式本地 Codex 翻译复用常驻 App Server，不再为每次划词重新启动 Codex CLI。
+- 每次请求仍使用独立临时目录和临时线程，并关闭 MCP、Hooks、Plugins、技能搜索及所有无关工具，减少启动和 Prompt 开销。
+- 单词查询只由 helper 的 JSON Schema 约束结构，移除插件 Prompt 中重复的 JSON 格式说明。
+
+### Fixed
+
+- 修复本地 Codex 已产生译文但 Bob 仍只显示“生成中”的体感延迟。
+- 修复用户 Codex 配置中的 MCP 服务可能随翻译线程启动、额外增加数秒耗时的问题。
+
+## [3.3.0] - 2026-08-22
+
+### Added
+
+- 本地 Codex 翻译新增启动、生成和结果整理阶段的流式进度反馈。
+- helper 为每次 Codex 请求记录安全的生命周期日志，包括请求编号、阶段、耗时、取消、超时和失败；不记录划词正文。
+
+### Changed
+
+- helper 使用 `codex exec --json` 读取 JSONL 生命周期事件，并通过独立结果文件读取最终结构化输出。
+- 新增 `/v1/codex/translate/stream` NDJSON 接口；原 `/v1/codex/translate` 保持兼容。
+
+### Fixed
+
+- 修复本地 Codex 完整结果返回前 Bob 一直空白显示“生成中”、无法判断当前阶段的问题。
+- 修复用户关闭 Bob 窗口后，helper 日志无法识别请求已取消的问题。
+
+## [3.2.0] - 2026-08-22
 
 ### Added
 

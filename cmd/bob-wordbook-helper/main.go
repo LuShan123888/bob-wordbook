@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -139,11 +140,12 @@ type errorResponse struct {
 }
 
 type server struct {
-	defaultPath string
-	homeDir     string
-	now         func() time.Time
-	writeMu     sync.Mutex
-	codex       *codexService
+	defaultPath          string
+	homeDir              string
+	now                  func() time.Time
+	writeMu              sync.Mutex
+	codexRequestSequence atomic.Uint64
+	codex                *codexService
 }
 
 func main() {
@@ -170,6 +172,7 @@ func main() {
 	}
 
 	app := newServer(defaultPath, homeDir)
+	defer app.codex.closeAppServer()
 	resolvedDefaultPath, err := app.resolvePath("")
 	if err != nil {
 		log.Fatalf("[main] resolve default output path failed err:%v", err)
@@ -186,6 +189,13 @@ func main() {
 	}
 
 	log.Printf("[main] start Bob Wordbook helper version:%s, listen:%s, defaultPath:%s", version, *listenAddress, resolvedDefaultPath)
+	go func() {
+		warmContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := app.codex.warmAppServer(warmContext); err != nil {
+			log.Printf("[codex.app-server] warm-up skipped err:%v", err)
+		}
+	}()
 	if err := serveUntilSignal(httpServer); err != nil {
 		log.Fatalf("[main] serve HTTP failed err:%v", err)
 	}
@@ -230,6 +240,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /v3/entries", s.handleAppendStructuredLearningEntry)
 	mux.HandleFunc("GET /v1/codex/status", s.handleCodexStatus)
 	mux.HandleFunc("POST /v1/codex/translate", s.handleCodexTranslate)
+	mux.HandleFunc("POST /v1/codex/translate/stream", s.handleCodexTranslateStream)
 	return mux
 }
 

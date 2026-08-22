@@ -13,6 +13,7 @@ function loadPlugin(http, options = {}) {
       provider: "aihubmix",
       apiKey: "test-key",
       model: "gpt-4o-mini",
+      aiHubMixReasoningEffort: "auto",
       codexModel: "gpt-5.6-terra",
       codexReasoningEffort: "low",
       codexServiceTier: "standard",
@@ -40,6 +41,23 @@ function completeStream(request, chunks, statusCode = 200) {
     request.streamHandler({ text });
   }
   request.handler({ response: { statusCode } });
+}
+
+function completeLocalCodexStream(request, data, statusCode = 200) {
+  const events = [
+    { type: "status", stage: "starting", message: "正在启动本地 Codex…" },
+    { type: "status", stage: "generating", message: "本地 Codex 正在生成翻译…" },
+  ];
+  if (data.kind === "text") {
+    const midpoint = Math.ceil(data.content.text.length / 2);
+    events.push(
+      { type: "delta", delta: data.content.text.slice(0, midpoint) },
+      { type: "delta", delta: data.content.text.slice(midpoint) },
+    );
+  }
+  events.push({ type: "result", data });
+  const body = events.map((event) => `${JSON.stringify(event)}\n`).join("");
+  completeStream(request, [body.slice(0, 23), body.slice(23)], statusCode);
 }
 
 function wordJSON(overrides = {}) {
@@ -100,6 +118,7 @@ test("translate streams AIHubMix output and persists the completed English resul
   assert.equal(aiRequest.body.model, "gpt-4o-mini");
   assert.equal(aiRequest.body.messages[1].content, "piece of cake");
   assert.equal(aiRequest.body.stream, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(aiRequest.body, "reasoning_effort"), false);
   assert.equal(streamResults.at(-1).toParagraphs[0], "释义\n小菜一碟");
 
   assert.equal(helperRequest.url, "http://127.0.0.1:19820/v3/entries");
@@ -116,6 +135,37 @@ test("translate streams AIHubMix output and persists the completed English resul
   assert.equal(completion.result.toParagraphs[0], "释义\n小菜一碟");
   assert.match(completion.result.toParagraphs[1], /已保存到单词本/);
   assert.equal(completion.result.raw.saved, true);
+});
+
+test("translate sends an explicitly selected AIHubMix reasoning effort", () => {
+  let aiRequest;
+  const plugin = loadPlugin(
+    {
+      streamRequest: (request) => {
+        aiRequest = request;
+        completeStream(request, successChunks("结果"));
+      },
+      request: (request) => {
+        request.handler({
+          data: { ok: true, path: "/tmp/wordbook.jsonl" },
+          response: { statusCode: 201 },
+        });
+      },
+    },
+    { aiHubMixReasoningEffort: "minimal" },
+  );
+
+  plugin.translate(
+    {
+      text: "take care",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: () => {},
+    },
+    undefined,
+  );
+
+  assert.equal(aiRequest.body.reasoning_effort, "minimal");
 });
 
 test("translate expands Bob prompt variables in a custom system prompt", () => {
@@ -231,6 +281,38 @@ test("translate rejects missing AIHubMix configuration before making requests", 
 
   assert.equal(called, false);
   assert.equal(completion.error.type, "secretKey");
+});
+
+test("translate rejects an invalid AIHubMix reasoning effort before making requests", () => {
+  let called = false;
+  let completion;
+  const plugin = loadPlugin(
+    {
+      streamRequest: () => {
+        called = true;
+      },
+      request: () => {
+        called = true;
+      },
+    },
+    { aiHubMixReasoningEffort: "max" },
+  );
+
+  plugin.translate(
+    {
+      text: "hello",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(called, false);
+  assert.equal(completion.error.type, "param");
+  assert.match(completion.error.message, /AIHubMix 思考深度/);
 });
 
 test("translate returns an API error without persisting", () => {
@@ -511,27 +593,22 @@ test("translate rejects malformed word data instead of persisting or displaying 
 
 test("translate uses local Codex settings and persists the structured result", () => {
   const requests = [];
-  let streamCalled = false;
+  let codexRequest;
   let completion;
+  const streamResults = [];
   const plugin = loadPlugin(
     {
-      streamRequest: () => {
-        streamCalled = true;
+      streamRequest: (request) => {
+        codexRequest = request;
+        completeLocalCodexStream(request, {
+          ok: true,
+          kind: "text",
+          content: { text: "含义：小菜一碟\n例句：It is a piece of cake." },
+          model: "gpt-5.6-terra",
+        });
       },
       request: (request) => {
         requests.push(request);
-        if (request.url.endsWith("/v1/codex/translate")) {
-          request.handler({
-            data: {
-              ok: true,
-              kind: "text",
-              content: { text: "含义：小菜一碟\n例句：It is a piece of cake." },
-              model: "gpt-5.6-terra",
-            },
-            response: { statusCode: 200 },
-          });
-          return;
-        }
         request.handler({
           data: { ok: true, path: "/tmp/wordbook.jsonl" },
           response: { statusCode: 201 },
@@ -552,6 +629,7 @@ test("translate uses local Codex settings and persists the structured result", (
       text: "piece of cake",
       detectFrom: "en",
       detectTo: "zh-Hans",
+      onStream: (value) => streamResults.push(value),
       onCompletion: (value) => {
         completion = value;
       },
@@ -559,23 +637,25 @@ test("translate uses local Codex settings and persists the structured result", (
     undefined,
   );
 
-  assert.equal(streamCalled, false);
-  assert.equal(requests[0].url, "http://127.0.0.1:19820/v1/codex/translate");
-  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
+  assert.equal(codexRequest.url, "http://127.0.0.1:19820/v1/codex/translate/stream");
+  assert.deepEqual(JSON.parse(JSON.stringify(codexRequest.body)), {
     text: "piece of cake",
     kind: "text",
     system_prompt: plugin.buildSystemPrompt(
       { detectFrom: "en", detectTo: "zh-Hans" },
       "piece of cake",
       "",
+      false,
     ),
     model: "gpt-5.6-terra",
     reasoning_effort: "medium",
     service_tier: "fast",
   });
-  assert.equal(requests[1].url, "http://127.0.0.1:19820/v3/entries");
-  assert.equal(requests[1].body.provider, "local_codex");
-  assert.equal(requests[1].body.model, "gpt-5.6-terra");
+  assert.equal(streamResults[0].toParagraphs[0], "正在连接本地 Codex…");
+  assert.equal(streamResults.at(-1).toParagraphs[0], "含义：小菜一碟\n例句：It is a piece of cake.");
+  assert.equal(requests[0].url, "http://127.0.0.1:19820/v3/entries");
+  assert.equal(requests[0].body.provider, "local_codex");
+  assert.equal(requests[0].body.model, "gpt-5.6-terra");
   assert.equal(completion.result.raw.provider, "local_codex");
   assert.equal(completion.result.raw.saved, true);
   assert.match(completion.result.toParagraphs[0], /小菜一碟/);
@@ -585,20 +665,15 @@ test("translate renders a local Codex word with Bob native dictionary fields", (
   let completion;
   const plugin = loadPlugin(
     {
-      streamRequest: () => assert.fail("AIHubMix must not be called"),
+      streamRequest: (request) => {
+        completeLocalCodexStream(request, {
+          ok: true,
+          kind: "word",
+          content: JSON.parse(wordJSON()),
+          model: "gpt-5.6-terra",
+        });
+      },
       request: (request) => {
-        if (request.url.endsWith("/v1/codex/translate")) {
-          request.handler({
-            data: {
-              ok: true,
-              kind: "word",
-              content: JSON.parse(wordJSON()),
-              model: "gpt-5.6-terra",
-            },
-            response: { statusCode: 200 },
-          });
-          return;
-        }
         request.handler({
           data: { ok: true, path: "/tmp/wordbook.jsonl" },
           response: { statusCode: 201 },
@@ -623,6 +698,35 @@ test("translate renders a local Codex word with Bob native dictionary fields", (
   assert.equal(completion.result.toDict.word, "translation");
   assert.deepEqual(Array.from(completion.result.toDict.parts[0].means), ["翻译", "译文"]);
   assert.equal(completion.result.raw.model, "gpt-5.6-terra");
+});
+
+test("translate reports an outdated helper when the local Codex stream endpoint is missing", () => {
+  let completion;
+  const plugin = loadPlugin(
+    {
+      streamRequest: (request) => {
+        request.streamHandler({ text: "404 page not found\n" });
+        request.handler({ response: { statusCode: 404 } });
+      },
+      request: () => assert.fail("persistence must not run"),
+    },
+    { provider: "local_codex", apiKey: "" },
+  );
+
+  plugin.translate(
+    {
+      text: "piece of cake",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(completion.error.type, "api");
+  assert.match(completion.error.message, /helper 版本过旧/);
 });
 
 test("pluginValidate checks local Codex through the helper", () => {

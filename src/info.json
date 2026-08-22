@@ -1,6 +1,6 @@
 {
   "identifier": "com.cian.bobwordbook",
-  "version": "3.2.0",
+  "version": "3.4.1",
   "category": "translate",
   "name": "英语学习与单词本",
   "summary": "使用 AIHubMix 或本地 Codex 翻译和分析英语，以 Bob 原生词典展示单词并保存结构化 JSONL。",
@@ -49,29 +49,46 @@
       "desc": "填写 AIHubMix 模型广场中的模型 ID。"
     },
     {
+      "identifier": "aiHubMixReasoningEffort",
+      "type": "menu",
+      "title": "AIHubMix 思考深度",
+      "defaultValue": "auto",
+      "menuValues": [
+        { "title": "Auto（推荐，按模型默认）", "value": "auto" },
+        { "title": "None（关闭思考）", "value": "none" },
+        { "title": "Minimal", "value": "minimal" },
+        { "title": "Low", "value": "low" },
+        { "title": "Medium", "value": "medium" },
+        { "title": "High", "value": "high" },
+        { "title": "XHigh", "value": "xhigh" }
+      ],
+      "desc": "仅在翻译服务选择 AIHubMix 时使用；Auto 不发送参数，兼容性最好。具体档位是否生效取决于模型。"
+    },
+    {
       "identifier": "codexModel",
       "type": "text",
       "title": "Codex 模型",
-      "defaultValue": "gpt-5.6-terra",
+      "defaultValue": "gpt-5.6-luna",
       "textConfig": {
         "type": "visible",
-        "placeholderText": "gpt-5.6-terra"
+        "placeholderText": "gpt-5.6-luna"
       },
-      "desc": "仅在翻译服务选择本地 Codex 时使用；模型必须对当前 ChatGPT 账号可用。"
+      "desc": "仅在翻译服务选择本地 Codex 时使用；日常翻译推荐 gpt-5.6-luna，优先质量可使用 gpt-5.6-terra。"
     },
     {
       "identifier": "codexReasoningEffort",
       "type": "menu",
       "title": "Codex 思考深度",
-      "defaultValue": "low",
+      "defaultValue": "none",
       "menuValues": [
-        { "title": "Low（推荐，翻译更快）", "value": "low" },
+        { "title": "None（推荐，翻译最快）", "value": "none" },
+        { "title": "Low", "value": "low" },
         { "title": "Medium", "value": "medium" },
         { "title": "High", "value": "high" },
         { "title": "XHigh", "value": "xhigh" },
         { "title": "Max（消耗最高）", "value": "max" }
       ],
-      "desc": "仅在翻译服务选择本地 Codex 时使用；日常翻译建议选择 Low。"
+      "desc": "仅在翻译服务选择本地 Codex 时使用；日常翻译建议选择 None，复杂语法分析可选择 Low 或更高。"
     },
     {
       "identifier": "codexServiceTier",

@@ -22,7 +22,7 @@ JavaScriptCore 插件
    ├── AIHubMix: POST https://aihubmix.com/v1/chat/completions
    │       └── OpenAI-compatible SSE
    │
-   └── Local Codex: POST http://127.0.0.1:19820/v1/codex/translate
+   └── Local Codex: POST http://127.0.0.1:19820/v1/codex/translate/stream
            └── Go helper ── codex exec ── structured JSON
                      │
                      └── POST /v3/entries（仅完整、成功且检测为英文的结果）
@@ -37,8 +37,8 @@ Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本�
 
 1. 插件优先读取 `query.originalText`，不可用时读取 `query.text`。
 2. 根据 `provider` 校验 AIHubMix 或本地 Codex 配置。
-3. AIHubMix 通过固定 HTTPS 端点发起流式请求；本地 Codex 通过 helper 启动 `codex exec` 并等待结构化结果。
-4. AIHubMix 响应按 SSE 事件边界解析；本地 Codex 响应由 JSON Schema 和 helper 数据契约共同校验。
+3. AIHubMix 通过固定 HTTPS 端点发起流式请求；思考深度为 Auto 时省略 `reasoning_effort`，否则在请求顶层透传用户选择。本地 Codex 通过 helper 启动 `codex exec --json`。
+4. AIHubMix 响应按 SSE 事件边界解析；本地 Codex 通过 NDJSON 返回阶段进度，最终响应由 JSON Schema 和 helper 数据契约共同校验。
 5. 只有响应完整、数据可解析且最终内容非空时，结果才被视为成功。
 6. 英文且不含中文汉字的输入调用 helper v3 接口；其他输入只返回翻译结果。
 7. 插件通过 `query.onCompletion` 返回最终结果：单词使用 Bob 原生 `toDict`，短语和句子使用 `toParagraphs`。
@@ -64,7 +64,8 @@ Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本�
 
 - `GET /healthz`：健康检查。
 - `GET /v1/codex/status`：检查 Codex CLI 是否存在并已登录。
-- `POST /v1/codex/translate`：使用 Codex CLI 生成结构化翻译结果。
+- `POST /v1/codex/translate/stream`：通过 NDJSON 返回 Codex 阶段进度、文本增量和最终结构化翻译结果。
+- `POST /v1/codex/translate`：兼容 3.2.0 插件的非流式 Codex 翻译接口。
 - `POST /v1/entries`：兼容 2.1.0 及更早插件的原文记录接口。
 - `POST /v2/entries`：保存英文原文及完整 AIHubMix 结果。
 - `POST /v3/entries`：保存结构化的单词或文本学习结果。
@@ -72,10 +73,11 @@ Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本�
 ### Codex 执行约束
 
 - helper 只从固定 Homebrew、`~/.local/bin` 路径或当前 `PATH` 查找 Codex CLI，不接受 HTTP 请求指定任意可执行文件。
-- 每次请求使用独立临时目录、`--ephemeral`、只读沙箱，并忽略用户 Codex 配置和规则。
-- Shell、Apps、浏览器、图片生成和多 Agent 功能均禁用，源文本在 Prompt 中作为 JSON 字符串数据传递。
-- 模型输出必须符合按 `word` 或 `text` 选择的 JSON Schema，并继续通过 v3 内容校验。
-- 同一 helper 同时只运行一个 Codex 翻译；请求取消会取消对应子进程，单次请求最多运行 100 秒。
+- 流式接口复用 helper 预热的 Codex App Server；每次请求使用独立临时目录、临时线程和只读沙箱。
+- Shell、Apps、浏览器、MCP、Hooks、Plugins、技能搜索、图片生成和多 Agent 功能均禁用，源文本在 Prompt 中作为 JSON 字符串数据传递。
+- 单词输出使用 JSON Schema 并通过 v3 内容校验；文本输出从 App Server 增量展示，完成后再校验并持久化。
+- 兼容接口继续使用隔离的 `codex exec --ephemeral --ignore-user-config --ignore-rules`。
+- 同一 helper 同时只运行一个 Codex 翻译；请求取消会终止常驻进程，下次请求自动重建，单次请求最多运行 100 秒。
 
 v2 请求示例：
 
