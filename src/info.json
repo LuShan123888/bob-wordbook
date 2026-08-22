@@ -1,15 +1,47 @@
 {
   "identifier": "com.cian.bobwordbook",
-  "version": "2.1.0",
+  "version": "3.1.0",
   "category": "translate",
-  "name": "单词本 JSONL",
-  "summary": "将 Bob 接收到的英文单词或短语追加保存为本地 JSONL。",
-  "icon": "001",
+  "name": "AIHubMix 英语学习",
+  "summary": "使用 AIHubMix 翻译和分析英语，以 Bob 原生词典展示单词并保存结构化 JSONL。",
+  "icon": "143",
   "author": "Cian Lu",
   "homepage": "https://github.com/LuShan123888/bob-wordbook",
   "appcast": "https://raw.githubusercontent.com/LuShan123888/bob-wordbook/main/appcast.json",
   "minBobVersion": "1.8.0",
   "options": [
+    {
+      "identifier": "apiKey",
+      "type": "text",
+      "title": "AIHubMix API Key",
+      "textConfig": {
+        "type": "secure",
+        "placeholderText": "sk-..."
+      },
+      "desc": "仅用于从 Bob 直接请求 AIHubMix，不会写入 JSONL 或发送给本地辅助程序。"
+    },
+    {
+      "identifier": "model",
+      "type": "text",
+      "title": "模型",
+      "defaultValue": "gpt-4o-mini",
+      "textConfig": {
+        "type": "visible",
+        "placeholderText": "gpt-4o-mini"
+      },
+      "desc": "填写 AIHubMix 模型广场中的模型 ID。"
+    },
+    {
+      "identifier": "systemPrompt",
+      "type": "text",
+      "title": "System Prompt（可选）",
+      "textConfig": {
+        "type": "visible",
+        "height": 160,
+        "placeholderText": "留空使用内置英语学习 Prompt"
+      },
+      "desc": "支持 $query.text、$query.detectFromLang 和 $query.detectToLang；留空时自动按单词、短语或句子提供学习建议。"
+    },
     {
       "identifier": "outputPath",
       "type": "text",

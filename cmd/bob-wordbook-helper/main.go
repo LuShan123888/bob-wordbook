@@ -36,15 +36,100 @@ type appendRequest struct {
 	Path string `json:"path,omitempty"`
 }
 
+type appendLearningRequest struct {
+	Text           string `json:"text"`
+	Result         string `json:"result"`
+	SourceLanguage string `json:"source_language"`
+	TargetLanguage string `json:"target_language"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Path           string `json:"path,omitempty"`
+}
+
+type appendStructuredLearningRequest struct {
+	Text           string          `json:"text"`
+	Kind           string          `json:"kind"`
+	Content        learningContent `json:"content"`
+	SourceLanguage string          `json:"source_language"`
+	TargetLanguage string          `json:"target_language"`
+	Provider       string          `json:"provider"`
+	Model          string          `json:"model"`
+	Path           string          `json:"path,omitempty"`
+}
+
+type learningContent struct {
+	Text         string            `json:"text,omitempty"`
+	Word         string            `json:"word,omitempty"`
+	Phonetics    []phonetic        `json:"phonetics,omitempty"`
+	Parts        []wordPart        `json:"parts,omitempty"`
+	Collocations []collocation     `json:"collocations,omitempty"`
+	Examples     []exampleSentence `json:"examples,omitempty"`
+}
+
+type phonetic struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type wordPart struct {
+	Part  string   `json:"part"`
+	Means []string `json:"means"`
+}
+
+type collocation struct {
+	Text    string `json:"text"`
+	Meaning string `json:"meaning"`
+}
+
+type exampleSentence struct {
+	Text        string `json:"text"`
+	Translation string `json:"translation"`
+}
+
 type entry struct {
 	Text      string `json:"text"`
 	CreatedAt string `json:"created_at"`
+}
+
+type learningEntry struct {
+	SchemaVersion  int    `json:"schema_version"`
+	Text           string `json:"text"`
+	Result         string `json:"result"`
+	SourceLanguage string `json:"source_language"`
+	TargetLanguage string `json:"target_language"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type structuredLearningEntry struct {
+	SchemaVersion  int             `json:"schema_version"`
+	Text           string          `json:"text"`
+	Kind           string          `json:"kind"`
+	Content        learningContent `json:"content"`
+	SourceLanguage string          `json:"source_language"`
+	TargetLanguage string          `json:"target_language"`
+	Provider       string          `json:"provider"`
+	Model          string          `json:"model"`
+	CreatedAt      string          `json:"created_at"`
 }
 
 type appendResponse struct {
 	OK    bool   `json:"ok"`
 	Path  string `json:"path"`
 	Entry entry  `json:"entry"`
+}
+
+type appendLearningResponse struct {
+	OK    bool          `json:"ok"`
+	Path  string        `json:"path"`
+	Entry learningEntry `json:"entry"`
+}
+
+type appendStructuredLearningResponse struct {
+	OK    bool                    `json:"ok"`
+	Path  string                  `json:"path"`
+	Entry structuredLearningEntry `json:"entry"`
 }
 
 type errorResponse struct {
@@ -138,6 +223,8 @@ func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /v1/entries", s.handleAppendEntry)
+	mux.HandleFunc("POST /v2/entries", s.handleAppendLearningEntry)
+	mux.HandleFunc("POST /v3/entries", s.handleAppendStructuredLearningEntry)
 	return mux
 }
 
@@ -146,29 +233,8 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Origin") != "" {
-		writeJSON(w, http.StatusForbidden, errorResponse{Message: "browser-origin requests are not allowed"})
-		return
-	}
-	if r.Header.Get(clientHeaderName) != clientHeaderValue {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "invalid client header"})
-		return
-	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{Message: "Content-Type must be application/json"})
-		return
-	}
-
 	var request appendRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Message: fmt.Sprintf("invalid JSON body: %v", err)})
-		return
-	}
-	if err := ensureJSONBodyEnded(decoder); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+	if !decodeAppendRequest(w, r, &request) {
 		return
 	}
 
@@ -192,7 +258,7 @@ func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
 		Text:      text,
 		CreatedAt: s.now().Format(time.RFC3339Nano),
 	}
-	if err := s.appendEntry(outputPath, wordbookEntry); err != nil {
+	if err := s.appendJSONL(outputPath, wordbookEntry); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: fmt.Sprintf("append entry: %v", err)})
 		return
 	}
@@ -204,8 +270,249 @@ func (s *server) handleAppendEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) appendEntry(outputPath string, wordbookEntry entry) error {
-	line, err := json.Marshal(wordbookEntry)
+func (s *server) handleAppendLearningEntry(w http.ResponseWriter, r *http.Request) {
+	var request appendLearningRequest
+	if !decodeAppendRequest(w, r, &request) {
+		return
+	}
+
+	text := strings.TrimSpace(request.Text)
+	if text == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "text must not be empty"})
+		return
+	}
+	if err := validateEnglishText(text); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+
+	result := strings.TrimSpace(request.Result)
+	if result == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "result must not be empty"})
+		return
+	}
+	if request.SourceLanguage != "en" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "source_language must be en"})
+		return
+	}
+	targetLanguage := strings.TrimSpace(request.TargetLanguage)
+	if targetLanguage == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "target_language must not be empty"})
+		return
+	}
+	if request.Provider != "aihubmix" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "provider must be aihubmix"})
+		return
+	}
+	model := strings.TrimSpace(request.Model)
+	if model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "model must not be empty"})
+		return
+	}
+
+	outputPath, err := s.resolvePath(request.Path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+
+	wordbookEntry := learningEntry{
+		SchemaVersion:  2,
+		Text:           text,
+		Result:         result,
+		SourceLanguage: request.SourceLanguage,
+		TargetLanguage: targetLanguage,
+		Provider:       request.Provider,
+		Model:          model,
+		CreatedAt:      s.now().Format(time.RFC3339Nano),
+	}
+	if err := s.appendJSONL(outputPath, wordbookEntry); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: fmt.Sprintf("append learning entry: %v", err)})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, appendLearningResponse{
+		OK:    true,
+		Path:  outputPath,
+		Entry: wordbookEntry,
+	})
+}
+
+func (s *server) handleAppendStructuredLearningEntry(w http.ResponseWriter, r *http.Request) {
+	var request appendStructuredLearningRequest
+	if !decodeAppendRequest(w, r, &request) {
+		return
+	}
+
+	text := strings.TrimSpace(request.Text)
+	if text == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "text must not be empty"})
+		return
+	}
+	if err := validateEnglishText(text); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+
+	kind := strings.TrimSpace(request.Kind)
+	content, err := normalizeLearningContent(kind, text, request.Content)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+	if request.SourceLanguage != "en" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "source_language must be en"})
+		return
+	}
+	targetLanguage := strings.TrimSpace(request.TargetLanguage)
+	if targetLanguage == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "target_language must not be empty"})
+		return
+	}
+	if request.Provider != "aihubmix" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "provider must be aihubmix"})
+		return
+	}
+	model := strings.TrimSpace(request.Model)
+	if model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "model must not be empty"})
+		return
+	}
+
+	outputPath, err := s.resolvePath(request.Path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return
+	}
+
+	wordbookEntry := structuredLearningEntry{
+		SchemaVersion:  3,
+		Text:           text,
+		Kind:           kind,
+		Content:        content,
+		SourceLanguage: request.SourceLanguage,
+		TargetLanguage: targetLanguage,
+		Provider:       request.Provider,
+		Model:          model,
+		CreatedAt:      s.now().Format(time.RFC3339Nano),
+	}
+	if err := s.appendJSONL(outputPath, wordbookEntry); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Message: fmt.Sprintf("append structured learning entry: %v", err)})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, appendStructuredLearningResponse{
+		OK:    true,
+		Path:  outputPath,
+		Entry: wordbookEntry,
+	})
+}
+
+func normalizeLearningContent(kind string, sourceText string, content learningContent) (learningContent, error) {
+	switch kind {
+	case "text":
+		content.Text = strings.TrimSpace(content.Text)
+		if content.Text == "" {
+			return learningContent{}, errors.New("content.text must not be empty for text entries")
+		}
+		if content.Word != "" || len(content.Phonetics) != 0 || len(content.Parts) != 0 ||
+			len(content.Collocations) != 0 || len(content.Examples) != 0 {
+			return learningContent{}, errors.New("text entries must not contain word fields")
+		}
+		return learningContent{Text: content.Text}, nil
+	case "word":
+		if strings.TrimSpace(content.Text) != "" {
+			return learningContent{}, errors.New("word entries must not contain content.text")
+		}
+		content.Word = strings.TrimSpace(content.Word)
+		if content.Word != sourceText {
+			return learningContent{}, errors.New("content.word must match text")
+		}
+		if len(content.Parts) == 0 {
+			return learningContent{}, errors.New("content.parts must not be empty for word entries")
+		}
+		if err := normalizeWordContent(&content); err != nil {
+			return learningContent{}, err
+		}
+		return content, nil
+	default:
+		return learningContent{}, errors.New("kind must be word or text")
+	}
+}
+
+func normalizeWordContent(content *learningContent) error {
+	if len(content.Phonetics) > 2 || len(content.Parts) > 4 || len(content.Collocations) > 3 || len(content.Examples) > 2 {
+		return errors.New("word content exceeds the supported item limits")
+	}
+	for index := range content.Phonetics {
+		content.Phonetics[index].Type = strings.TrimSpace(content.Phonetics[index].Type)
+		content.Phonetics[index].Value = strings.TrimSpace(content.Phonetics[index].Value)
+		if content.Phonetics[index].Type != "us" && content.Phonetics[index].Type != "uk" {
+			return errors.New("phonetic type must be us or uk")
+		}
+		if content.Phonetics[index].Value == "" {
+			return errors.New("phonetic value must not be empty")
+		}
+	}
+	for index := range content.Parts {
+		content.Parts[index].Part = strings.TrimSpace(content.Parts[index].Part)
+		if content.Parts[index].Part == "" || len(content.Parts[index].Means) == 0 || len(content.Parts[index].Means) > 4 {
+			return errors.New("each word part must have a part and one to four meanings")
+		}
+		for meanIndex := range content.Parts[index].Means {
+			content.Parts[index].Means[meanIndex] = strings.TrimSpace(content.Parts[index].Means[meanIndex])
+			if content.Parts[index].Means[meanIndex] == "" {
+				return errors.New("word meanings must not be empty")
+			}
+		}
+	}
+	for index := range content.Collocations {
+		content.Collocations[index].Text = strings.TrimSpace(content.Collocations[index].Text)
+		content.Collocations[index].Meaning = strings.TrimSpace(content.Collocations[index].Meaning)
+		if content.Collocations[index].Text == "" || content.Collocations[index].Meaning == "" {
+			return errors.New("collocations must include text and meaning")
+		}
+	}
+	for index := range content.Examples {
+		content.Examples[index].Text = strings.TrimSpace(content.Examples[index].Text)
+		content.Examples[index].Translation = strings.TrimSpace(content.Examples[index].Translation)
+		if content.Examples[index].Text == "" || content.Examples[index].Translation == "" {
+			return errors.New("examples must include text and translation")
+		}
+	}
+	return nil
+}
+
+func decodeAppendRequest(w http.ResponseWriter, r *http.Request, destination any) bool {
+	if r.Header.Get("Origin") != "" {
+		writeJSON(w, http.StatusForbidden, errorResponse{Message: "browser-origin requests are not allowed"})
+		return false
+	}
+	if r.Header.Get(clientHeaderName) != clientHeaderValue {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Message: "invalid client header"})
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, errorResponse{Message: "Content-Type must be application/json"})
+		return false
+	}
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: fmt.Sprintf("invalid JSON body: %v", err)})
+		return false
+	}
+	if err := ensureJSONBodyEnded(decoder); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
+		return false
+	}
+	return true
+}
+
+func (s *server) appendJSONL(outputPath string, value any) error {
+	line, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode JSONL entry: %w", err)
 	}

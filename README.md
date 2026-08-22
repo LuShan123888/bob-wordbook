@@ -4,37 +4,39 @@
 [![Release](https://img.shields.io/github/v/release/LuShan123888/bob-wordbook)](https://github.com/LuShan123888/bob-wordbook/releases)
 [![License](https://img.shields.io/github/license/LuShan123888/bob-wordbook)](LICENSE)
 
-将 Bob 接收到的英文单词或短语逐条保存到本地 JSONL 文件。
-
-Save English words and phrases received by Bob to a local JSONL file, one record per line.
+面向英语学习的 Bob 翻译插件：通过 AIHubMix 流式生成翻译、释义、例句和语法建议，并将英文输入及完整结果追加到本地 JSONL。
 
 ## 特性
 
-- 只保存 Bob 检测为英文且不含中文的单词、短语或句子，不修改原始文本内容。
-- 默认写入 `~/Downloads/bob-wordbook.jsonl`，也可在 Bob 中配置其他 `.jsonl` 路径。
-- 每条记录包含原文和 RFC 3339 时间戳，适合脚本、数据库或学习工具继续处理。
-- helper 只监听本机回环地址，不会暴露为局域网服务。
-- 提供 macOS LaunchAgent 安装器、Universal Binary Release、自动更新 appcast 和完整 CI。
-- helper 仅使用 Go 标准库，运行时不需要 Go、Node.js 或 Python。
+- 单个 Bob 服务同时完成 AIHubMix 翻译和本地单词本持久化，不读取 Bob 内部数据库。
+- 英文单词使用 Bob 原生词典界面；短语和句子使用适合连续阅读的纯文本结果。
+- 单词只展示音标、核心释义和一条例句；更多结构化学习内容保存在 JSONL 中。
+- 中文等非英文输入可以正常翻译，但不会写入单词本。
+- 只有完整收到 AIHubMix 流式结束标记后才会保存，截断结果不会落盘。
+- 保存失败时保留翻译结果并显示明确警告，不会误报“已保存”。
+- 默认写入 `~/Downloads/bob-wordbook.jsonl`，也可指定其他 `.jsonl` 路径。
+- helper 只监听本机回环地址，不接收或保存 AIHubMix API Key。
+- 提供 macOS LaunchAgent 安装器、Universal Binary Release、自动更新 appcast 和 CI。
 
 ## 工作方式
-
-Bob 插件无法直接写入 Downloads 等用户目录，因此项目分为两部分：
 
 ```text
 Bob 划词或输入翻译
         │
         ▼
-Bob 插件（src/）
-        │ HTTP，仅 127.0.0.1
-        ▼
-Go helper（后台常驻）
+Bob Wordbook 插件
+        ├── HTTPS ──▶ AIHubMix ──▶ 流式翻译结果
         │
-        ▼
-~/Downloads/bob-wordbook.jsonl
+        └── HTTP 127.0.0.1（仅英文完整结果）
+                      │
+                      ▼
+               Go 本地 helper
+                      │
+                      ▼
+          ~/Downloads/bob-wordbook.jsonl
 ```
 
-插件优先保存 Bob 提供的 `originalText`，不可用时保存 `text`。Bob 没有向插件开放直接读取系统剪贴板的接口，因此需要通过划词翻译或输入翻译触发。
+API Key 仅由 Bob 插件发送给 AIHubMix。helper 和 JSONL 都不会接收 API Key，也不会保存 System Prompt。
 
 ## 安装
 
@@ -59,17 +61,19 @@ Go helper（后台常驻）
    bash install.sh
    ```
 
-4. 双击同一目录中的 `bob-wordbook-v<version>.bobplugin`。
-5. 在 Bob「设置 → 服务」中添加并启用「单词本 JSONL」。
+4. 双击同一目录中的 `.bobplugin` 文件。
+5. 在 Bob「设置 → 服务 → 文本翻译」中添加并启用「AIHubMix 英语学习」。
+6. 填写 AIHubMix API Key 和模型 ID；需要时粘贴自己的 System Prompt。
+7. 关闭原来的 AIHubMix 和旧版「单词本 JSONL」服务，避免一次翻译产生重复结果。
 
-安装器会将文件写入：
+安装器会写入：
 
 - helper：`~/.local/bin/bob-wordbook-helper`
 - LaunchAgent：`~/Library/LaunchAgents/com.cian.bob-wordbook-helper.plist`
 - 卸载器：`~/.local/share/bob-wordbook/uninstall.sh`
 - 日志：`~/Library/Logs/bob-wordbook/`
 
-Release helper 使用临时签名，尚未经过 Apple Developer ID 公证。如果 macOS 阻止运行，请从源码构建，不要下载来源不明的二进制文件。
+Release helper 使用临时签名，尚未经过 Apple Developer ID 公证。如果 macOS 阻止运行，请从源码构建，不要安装来源不明的二进制文件。
 
 ### 从源码安装
 
@@ -84,38 +88,41 @@ make plugin
 bash scripts/install.sh bin/bob-wordbook-helper
 ```
 
-然后双击 `dist/bob-wordbook-v2.1.0.bobplugin` 安装 Bob 插件。
+然后双击 `dist/bob-wordbook-v3.1.0.bobplugin`。
 
-## 使用
+## 配置
 
-选中或输入英文单词、短语并调用 Bob。插件写入成功后会显示实际文件路径。
+- AIHubMix API Key：必填，仅用于请求 `https://aihubmix.com/v1/chat/completions`。
+- 模型：必填，默认 `gpt-4o-mini`；可填写 AIHubMix 模型广场中的其他模型 ID。
+- System Prompt：可选；留空使用内置英语学习 Prompt。
+- JSONL 文件路径：默认 `~/Downloads/bob-wordbook.jsonl`。
 
-默认 JSONL 内容：
+自定义 Prompt 支持 Bob 常用变量：
+
+- `$query.text`：用户输入的原文。
+- `$query.detectFromLang`：检测到的源语言名称。
+- `$query.detectToLang`：检测到的目标语言名称。
+
+路径必须是绝对路径或以 `~/` 开头，并以 `.jsonl` 结尾。不要输入 shell 转义用的反斜杠；`~` 只能作为开头的 `~/` 使用。
+
+## JSONL 数据
+
+英文翻译成功后，每次追加一个 schema v3 对象。单词保存为结构化内容：
 
 ```jsonl
-{"text":"take care","created_at":"2026-08-22T10:30:00+08:00"}
-{"text":"piece of cake","created_at":"2026-08-22T10:31:12.123+08:00"}
+{"schema_version":3,"text":"translation","kind":"word","content":{"word":"translation","phonetics":[{"type":"us","value":"trænzˈleɪʃən"}],"parts":[{"part":"n.","means":["翻译","译文"]}],"collocations":[{"text":"Chinese translation","meaning":"中文译文"}],"examples":[{"text":"Please send me the translation.","translation":"请把译文发给我。"}]},"source_language":"en","target_language":"zh-Hans","provider":"aihubmix","model":"gpt-4o-mini","created_at":"2026-08-22T12:30:00+08:00"}
 ```
 
-在 Bob 插件设置中修改「JSONL 文件路径」即可更换位置。路径必须是绝对路径或以 `~/` 开头，并以 `.jsonl` 结尾；不要输入 shell
-转义用的反斜杠，`~` 只能作为开头的 `~/` 使用。不存在的父目录会自动创建。
+短语和句子的 `content.text` 保存完整纯文本学习结果。旧版 schema v1/v2 记录仍然有效，helper 继续保留 `/v1/entries` 和 `/v2/entries` 兼容接口。
 
 ## 升级与卸载
 
-升级时下载新 Release，并再次运行其中的 `install.sh`，然后安装新的 `.bobplugin`。
-
-从 2.0.x 升级时请注意：2.1.0 使用新的合规插件标识符 `com.cian.bobwordbook`，Bob 可能将它显示为一个新插件。确认 JSONL 写入正常后，可手动移除旧的扇贝/Markdown 插件。旧 Markdown 单词本不会被迁移或删除。
+升级时必须同时运行新 Release 中的 `install.sh` 并安装新的 `.bobplugin`。3.1.0 插件需要支持 `/v3/entries` 的 3.1.0 helper；只升级其中一项将无法保存。从 2.1.0 升级到 3.x 后，还需要在插件设置中新增 AIHubMix API Key、模型和 Prompt 配置。
 
 卸载 helper：
 
 ```bash
 bash ~/.local/share/bob-wordbook/uninstall.sh
-```
-
-从源码安装时使用：
-
-```bash
-make uninstall
 ```
 
 卸载不会删除 JSONL 单词本。Bob 插件需要在 Bob 设置中单独移除。
@@ -138,9 +145,11 @@ tail -n 100 ~/Library/Logs/bob-wordbook/stderr.log
 
 常见问题：
 
-- `无法连接 Wordbook 本地辅助程序`：helper 未运行或端口 `19820` 被占用。
-- `path must point to a .jsonl file`：插件中配置的路径不是 `.jsonl` 文件。
-- 无法写入 Downloads：在「系统设置 → 隐私与安全性 → 文件与文件夹」中允许 helper 访问。
+- `请先填写 AIHubMix API Key`：在插件设置中填写有效密钥并点击验证。
+- `AIHubMix 流式响应未正常完成`：请求中途断开，插件不会保存不完整结果，可重试。
+- `无法连接 Wordbook 本地辅助程序`：helper 未运行或端口 `19820` 被占用；译文仍会显示，但不会落盘。
+- `path must point to a .jsonl file`：配置路径不是 `.jsonl` 文件。
+- 无法写入目标目录：在「系统设置 → 隐私与安全性 → 文件与文件夹」中允许 helper 访问。
 
 ## 开发与发布
 
@@ -150,7 +159,7 @@ make build   # 构建当前架构 helper
 make plugin  # 构建确定性的 Bob 插件包
 ```
 
-推送与 `src/info.json` 版本一致的 `v<version>` 标签后，Release 工作流会测试项目、构建 macOS arm64/amd64 Universal helper，并创建包含校验和的 GitHub Release。发布前必须同步更新 `appcast.json` 中的版本、下载地址和确定性插件 SHA256。
+推送与 `src/info.json` 版本一致的 `v<version>` 标签后，Release 工作流会测试项目、构建 macOS arm64/amd64 Universal helper，并创建包含校验和的 GitHub Release。
 
 更多信息：
 
@@ -159,6 +168,7 @@ make plugin  # 构建确定性的 Bob 插件包
 - [贡献指南](CONTRIBUTING.md)
 - [安全政策](SECURITY.md)
 - [Bob 插件开发文档](https://bobtranslate.com/plugin/)
+- [AIHubMix API 文档](https://docs.aihubmix.com/en/quick-start)
 
 ## License
 

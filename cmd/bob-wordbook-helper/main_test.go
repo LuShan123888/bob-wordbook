@@ -61,6 +61,189 @@ func TestAppendEntriesToDefaultJSONL(t *testing.T) {
 	}
 }
 
+func TestAppendLearningEntryToJSONL(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "Downloads", "bob-wordbook.jsonl")
+	app := newServer(outputPath, tempDir)
+	app.now = func() time.Time {
+		return time.Date(2026, time.August, 22, 11, 15, 0, 0, time.FixedZone("CST", 8*60*60))
+	}
+
+	request := appendLearningRequest{
+		Text:           "piece of cake",
+		Result:         "## 释义\n小菜一碟",
+		SourceLanguage: "en",
+		TargetLanguage: "zh-Hans",
+		Provider:       "aihubmix",
+		Model:          "gpt-4o-mini",
+	}
+	response := postLearningEntry(t, app.routes(), request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status code = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	line, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	var got learningEntry
+	if err := json.Unmarshal(bytes.TrimSpace(line), &got); err != nil {
+		t.Fatalf("decode JSONL entry: %v", err)
+	}
+	if got.SchemaVersion != 2 {
+		t.Fatalf("schema_version = %d, want 2", got.SchemaVersion)
+	}
+	if got.Text != request.Text || got.Result != request.Result {
+		t.Fatalf("learning entry content = %#v", got)
+	}
+	if got.SourceLanguage != "en" || got.TargetLanguage != "zh-Hans" {
+		t.Fatalf("learning entry languages = %#v", got)
+	}
+	if got.Provider != "aihubmix" || got.Model != "gpt-4o-mini" {
+		t.Fatalf("learning entry provider metadata = %#v", got)
+	}
+	if got.CreatedAt != "2026-08-22T11:15:00+08:00" {
+		t.Fatalf("created_at = %q", got.CreatedAt)
+	}
+}
+
+func TestAppendStructuredWordEntryToJSONL(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "Downloads", "bob-wordbook.jsonl")
+	app := newServer(outputPath, tempDir)
+	app.now = func() time.Time {
+		return time.Date(2026, time.August, 22, 12, 30, 0, 0, time.FixedZone("CST", 8*60*60))
+	}
+
+	request := appendStructuredLearningRequest{
+		Text: "translation",
+		Kind: "word",
+		Content: learningContent{
+			Word:      "translation",
+			Phonetics: []phonetic{{Type: "us", Value: "trænzˈleɪʃən"}},
+			Parts:     []wordPart{{Part: "n.", Means: []string{"翻译", "译文"}}},
+			Collocations: []collocation{
+				{Text: "Chinese translation", Meaning: "中文译文"},
+			},
+			Examples: []exampleSentence{
+				{Text: "Please send me the translation.", Translation: "请把译文发给我。"},
+			},
+		},
+		SourceLanguage: "en",
+		TargetLanguage: "zh-Hans",
+		Provider:       "aihubmix",
+		Model:          "gpt-4o-mini",
+	}
+	response := postStructuredLearningEntry(t, app.routes(), request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status code = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	line, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	var got structuredLearningEntry
+	if err := json.Unmarshal(bytes.TrimSpace(line), &got); err != nil {
+		t.Fatalf("decode JSONL entry: %v", err)
+	}
+	if got.SchemaVersion != 3 || got.Kind != "word" {
+		t.Fatalf("entry schema = %d, kind = %q", got.SchemaVersion, got.Kind)
+	}
+	if got.Content.Text != "" || got.Content.Word != "translation" {
+		t.Fatalf("entry content = %#v", got.Content)
+	}
+	if len(got.Content.Parts) != 1 || got.Content.Parts[0].Means[0] != "翻译" {
+		t.Fatalf("entry parts = %#v", got.Content.Parts)
+	}
+	if got.CreatedAt != "2026-08-22T12:30:00+08:00" {
+		t.Fatalf("created_at = %q", got.CreatedAt)
+	}
+}
+
+func TestAppendStructuredEntryRejectsMismatchedKindAndContent(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "wordbook.jsonl")
+	app := newServer(outputPath, tempDir)
+	request := appendStructuredLearningRequest{
+		Text:           "hello",
+		Kind:           "word",
+		Content:        learningContent{Text: "你好"},
+		SourceLanguage: "en",
+		TargetLanguage: "zh-Hans",
+		Provider:       "aihubmix",
+		Model:          "gpt-4o-mini",
+	}
+
+	response := postStructuredLearningEntry(t, app.routes(), request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("invalid structured entry created an output file: %v", err)
+	}
+}
+
+func TestAppendLearningEntryRejectsInvalidContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		request appendLearningRequest
+	}{
+		{
+			name: "Chinese source text",
+			request: appendLearningRequest{
+				Text: "你好", Result: "hello", SourceLanguage: "zh-Hans", TargetLanguage: "en", Provider: "aihubmix", Model: "gpt-4o-mini",
+			},
+		},
+		{
+			name: "mixed source text",
+			request: appendLearningRequest{
+				Text: "hello 你好", Result: "result", SourceLanguage: "en", TargetLanguage: "zh-Hans", Provider: "aihubmix", Model: "gpt-4o-mini",
+			},
+		},
+		{
+			name: "empty result",
+			request: appendLearningRequest{
+				Text: "hello", SourceLanguage: "en", TargetLanguage: "zh-Hans", Provider: "aihubmix", Model: "gpt-4o-mini",
+			},
+		},
+		{
+			name: "wrong source language",
+			request: appendLearningRequest{
+				Text: "hello", Result: "result", SourceLanguage: "auto", TargetLanguage: "zh-Hans", Provider: "aihubmix", Model: "gpt-4o-mini",
+			},
+		},
+		{
+			name: "wrong provider",
+			request: appendLearningRequest{
+				Text: "hello", Result: "result", SourceLanguage: "en", TargetLanguage: "zh-Hans", Provider: "other", Model: "gpt-4o-mini",
+			},
+		},
+		{
+			name: "empty model",
+			request: appendLearningRequest{
+				Text: "hello", Result: "result", SourceLanguage: "en", TargetLanguage: "zh-Hans", Provider: "aihubmix",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			outputPath := filepath.Join(tempDir, "wordbook.jsonl")
+			app := newServer(outputPath, tempDir)
+
+			response := postLearningEntry(t, app.routes(), test.request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status code = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+				t.Fatalf("invalid learning entry created an output file: %v", err)
+			}
+		})
+	}
+}
+
 func TestAppendEntryExpandsHomePath(t *testing.T) {
 	tempDir := t.TempDir()
 	app := newServer("~/Downloads/default.jsonl", tempDir)
@@ -239,6 +422,38 @@ func postEntry(t *testing.T, handler http.Handler, requestBody appendRequest) *h
 		t.Fatalf("encode request: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/entries", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(clientHeaderName, clientHeaderValue)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func postLearningEntry(t *testing.T, handler http.Handler, requestBody appendLearningRequest) *httptest.ResponseRecorder {
+	t.Helper()
+
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v2/entries", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(clientHeaderName, clientHeaderValue)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func postStructuredLearningEntry(t *testing.T, handler http.Handler, requestBody appendStructuredLearningRequest) *httptest.ResponseRecorder {
+	t.Helper()
+
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v3/entries", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(clientHeaderName, clientHeaderValue)
 

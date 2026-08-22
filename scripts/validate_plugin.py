@@ -46,8 +46,10 @@ def main() -> None:
     option_ids = [option.get("identifier") for option in info.get("options", [])]
     if len(option_ids) != len(set(option_ids)):
         raise SystemExit("plugin option identifiers must be unique")
-    if "outputPath" not in option_ids:
-        raise SystemExit("plugin must define the outputPath option")
+    required_option_ids = {"apiKey", "model", "systemPrompt", "outputPath"}
+    missing_option_ids = sorted(required_option_ids - set(option_ids))
+    if missing_option_ids:
+        raise SystemExit(f"plugin is missing options: {', '.join(missing_option_ids)}")
 
     if args.artifact:
         validate_artifact(args.artifact, info, versions)

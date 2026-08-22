@@ -61,13 +61,14 @@ plutil -insert StandardOutPath -string "$LOG_DIR/stdout.log" "$TEMP_PLIST"
 plutil -insert StandardErrorPath -string "$LOG_DIR/stderr.log" "$TEMP_PLIST"
 plutil -lint "$TEMP_PLIST"
 mv -f "$TEMP_PLIST" "$PLIST_PATH"
+chmod 0644 "$PLIST_PATH"
 
 if [[ "${BOB_WORDBOOK_SKIP_LAUNCH:-0}" != "1" ]]; then
   if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
     launchctl bootout "$SERVICE_TARGET"
   fi
-  launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
-  launchctl kickstart -k "$SERVICE_TARGET"
+  launchctl asuser "$USER_ID" launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
+  launchctl asuser "$USER_ID" launchctl kickstart -k "$SERVICE_TARGET"
 fi
 
 echo "Installed helper: $INSTALL_PATH"

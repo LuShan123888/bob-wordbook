@@ -17,4 +17,6 @@
 - helper 默认且强制只监听回环地址。
 - 本机接口不是远程服务，也不应通过端口转发或反向代理暴露。
 - 输出路径由本机 Bob 插件设置提供，helper 使用当前 macOS 用户权限写入。
+- AIHubMix API Key 由 Bob 插件直接发送到 `https://aihubmix.com`，不会发送给 helper、写入 JSONL 或输出到 helper 日志。
+- JSONL 会保存用户输入和完整模型结果，用户应自行选择符合隐私要求的输出目录和同步服务。
 - Release 中的 helper 使用临时签名，不代表 Apple Developer ID 签名或公证；安装前应核对 `SHA256SUMS`。
