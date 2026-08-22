@@ -161,6 +161,38 @@ func TestAppendStructuredWordEntryToJSONL(t *testing.T) {
 	}
 }
 
+func TestAppendStructuredEntryAcceptsLocalCodexProvider(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "wordbook.jsonl")
+	app := newServer(outputPath, tempDir)
+	request := appendStructuredLearningRequest{
+		Text:           "take care",
+		Kind:           "text",
+		Content:        learningContent{Text: "含义：保重"},
+		SourceLanguage: "en",
+		TargetLanguage: "zh-Hans",
+		Provider:       "local_codex",
+		Model:          "gpt-5.6-terra",
+	}
+
+	response := postStructuredLearningEntry(t, app.routes(), request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status code = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	line, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	var got structuredLearningEntry
+	if err := json.Unmarshal(bytes.TrimSpace(line), &got); err != nil {
+		t.Fatalf("decode JSONL entry: %v", err)
+	}
+	if got.Provider != "local_codex" || got.Model != "gpt-5.6-terra" {
+		t.Fatalf("entry provider metadata = %#v", got)
+	}
+}
+
 func TestAppendStructuredEntryRejectsMismatchedKindAndContent(t *testing.T) {
 	tempDir := t.TempDir()
 	outputPath := filepath.Join(tempDir, "wordbook.jsonl")

@@ -2,7 +2,25 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号采用语义化版本。
 
-## [3.1.0] - Unreleased
+## [3.2.0] - Unreleased
+
+### Added
+
+- 新增本地 Codex 翻译服务，可复用 Codex CLI 的 ChatGPT 登录状态。
+- 支持配置 Codex 模型、`low` 至 `max` 思考深度，以及 Standard/Fast 速度模式。
+- helper 新增 `/v1/codex/status` 与 `/v1/codex/translate`，并使用 JSON Schema 校验结构化结果。
+
+### Changed
+
+- 插件更名为「英语学习与单词本」，AIHubMix 继续作为默认兼容服务。
+- JSONL schema v3 的 `provider` 新增 `local_codex` 取值。
+
+### Security
+
+- Codex 调用使用临时工作目录、只读沙箱和临时会话，并禁用与翻译无关的工具。
+- helper 不读取、复制或记录 Codex 登录凭据。
+
+## [3.1.0] - 2026-08-22
 
 ### Added
 

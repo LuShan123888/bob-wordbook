@@ -2,7 +2,7 @@
 
 ## 目标
 
-bob-wordbook 是一个独立的 Bob 文本翻译服务。它通过 AIHubMix 生成翻译和英语学习建议，并仅将英文输入及完整成功结果追加到用户指定的本地 JSONL 文件。
+bob-wordbook 是一个独立的 Bob 文本翻译服务。它通过 AIHubMix 或本地 Codex CLI 生成翻译和英语学习建议，并仅将英文输入及完整成功结果追加到用户指定的本地 JSONL 文件。
 
 默认文件为：
 
@@ -10,7 +10,7 @@ bob-wordbook 是一个独立的 Bob 文本翻译服务。它通过 AIHubMix 生�
 ~/Downloads/bob-wordbook.jsonl
 ```
 
-项目不读取 Bob 的内部数据库，不拦截其他翻译服务，也不复制 Bob 原生 AIHubMix 服务的配置。
+项目不读取 Bob 的内部数据库，不拦截其他翻译服务，也不复制 Bob 原生 AIHubMix 服务的配置或 Codex 登录凭据。
 
 ## 架构
 
@@ -19,17 +19,16 @@ Bob query
    │
    ▼
 JavaScriptCore 插件
-   ├── POST https://aihubmix.com/v1/chat/completions
+   ├── AIHubMix: POST https://aihubmix.com/v1/chat/completions
    │       └── OpenAI-compatible SSE
    │
-   └── POST http://127.0.0.1:19820/v3/entries
-           └── 仅完整、成功且检测为英文的结果
-                    │
-                    ▼
-              Go 本地 helper
-                    │ O_APPEND + fsync
-                    ▼
-              用户指定的 JSONL
+   └── Local Codex: POST http://127.0.0.1:19820/v1/codex/translate
+           └── Go helper ── codex exec ── structured JSON
+                     │
+                     └── POST /v3/entries（仅完整、成功且检测为英文的结果）
+                                │ O_APPEND + fsync
+                                ▼
+                          用户指定的 JSONL
 ```
 
 Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本机回环地址的 helper 完成。
@@ -37,12 +36,12 @@ Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本�
 ## 翻译流程
 
 1. 插件优先读取 `query.originalText`，不可用时读取 `query.text`。
-2. 校验 AIHubMix API Key 和模型配置。
-3. 通过固定端点 `https://aihubmix.com/v1/chat/completions` 发起流式请求。
-4. 插件按 SSE 事件边界重组任意分块并解析 `choices[0].delta.content`；短语和句子调用 `query.onStream`，单词等待完整 JSON 后再渲染，避免显示中间协议数据。
-5. 只有 HTTP 成功、数据可解析、收到 `[DONE]` 且最终文本非空时，结果才被视为完整。
+2. 根据 `provider` 校验 AIHubMix 或本地 Codex 配置。
+3. AIHubMix 通过固定 HTTPS 端点发起流式请求；本地 Codex 通过 helper 启动 `codex exec` 并等待结构化结果。
+4. AIHubMix 响应按 SSE 事件边界解析；本地 Codex 响应由 JSON Schema 和 helper 数据契约共同校验。
+5. 只有响应完整、数据可解析且最终内容非空时，结果才被视为成功。
 6. 英文且不含中文汉字的输入调用 helper v3 接口；其他输入只返回翻译结果。
-7. helper 返回后，插件通过 `query.onCompletion` 返回最终结果：单词使用 Bob 原生 `toDict`，短语和句子使用 `toParagraphs`。
+7. 插件通过 `query.onCompletion` 返回最终结果：单词使用 Bob 原生 `toDict`，短语和句子使用 `toParagraphs`。
 
 截断流、API 错误或空结果不会写入 JSONL。helper 写入失败不会丢弃已经成功生成的译文，而是在最终结果中追加保存失败警告。
 
@@ -64,9 +63,19 @@ Bob 插件的 `$file` 只能写插件沙盒，因此持久化仍由只监听本�
 ### 接口
 
 - `GET /healthz`：健康检查。
+- `GET /v1/codex/status`：检查 Codex CLI 是否存在并已登录。
+- `POST /v1/codex/translate`：使用 Codex CLI 生成结构化翻译结果。
 - `POST /v1/entries`：兼容 2.1.0 及更早插件的原文记录接口。
 - `POST /v2/entries`：保存英文原文及完整 AIHubMix 结果。
-- `POST /v3/entries`：保存结构化的单词或文本学习结果；3.1.0 插件使用此接口。
+- `POST /v3/entries`：保存结构化的单词或文本学习结果。
+
+### Codex 执行约束
+
+- helper 只从固定 Homebrew、`~/.local/bin` 路径或当前 `PATH` 查找 Codex CLI，不接受 HTTP 请求指定任意可执行文件。
+- 每次请求使用独立临时目录、`--ephemeral`、只读沙箱，并忽略用户 Codex 配置和规则。
+- Shell、Apps、浏览器、图片生成和多 Agent 功能均禁用，源文本在 Prompt 中作为 JSON 字符串数据传递。
+- 模型输出必须符合按 `word` 或 `text` 选择的 JSON Schema，并继续通过 v3 内容校验。
+- 同一 helper 同时只运行一个 Codex 翻译；请求取消会取消对应子进程，单次请求最多运行 100 秒。
 
 v2 请求示例：
 
@@ -86,7 +95,7 @@ v2 请求示例：
 
 - `text` 必须包含英文字母且不得包含中文汉字。
 - `result`、`target_language` 和 `model` 不得为空。
-- `source_language` 必须为 `en`，`provider` 必须为 `aihubmix`。
+- `source_language` 必须为 `en`，`provider` 必须为 `aihubmix` 或 `local_codex`。
 - 输出路径必须是绝对路径或以 `~/` 开头，并以 `.jsonl` 结尾。
 - 路径不得包含反斜杠，`~` 只能作为开头的 `~/` 使用。
 - 请求体不得超过 64 KiB，不接受未知字段或连续多个 JSON 对象。
@@ -121,7 +130,7 @@ v2 请求示例：
 | `content` | object | 单词的结构化词典内容，或短语/句子的 `text` 结果 |
 | `source_language` | string | 固定为 `en` |
 | `target_language` | string | Bob 检测出的目标语言代码 |
-| `provider` | string | 固定为 `aihubmix` |
+| `provider` | string | `aihubmix` 或 `local_codex` |
 | `model` | string | 本次请求使用的模型 ID |
 | `created_at` | string | RFC 3339 时间戳，保留本地时区和必要的小数秒 |
 

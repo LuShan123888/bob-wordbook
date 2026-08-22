@@ -27,6 +27,7 @@ const (
 	clientHeaderValue    = "bob-plugin"
 	maxRequestBodyBytes  = 64 << 10
 	shutdownTimeout      = 5 * time.Second
+	helperWriteTimeout   = 110 * time.Second
 )
 
 var version = "dev"
@@ -142,6 +143,7 @@ type server struct {
 	homeDir     string
 	now         func() time.Time
 	writeMu     sync.Mutex
+	codex       *codexService
 }
 
 func main() {
@@ -178,7 +180,7 @@ func main() {
 		Handler:           app.routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      helperWriteTimeout,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    8 << 10,
 	}
@@ -216,6 +218,7 @@ func newServer(defaultPath string, homeDir string) *server {
 		defaultPath: defaultPath,
 		homeDir:     homeDir,
 		now:         time.Now,
+		codex:       newCodexService(homeDir),
 	}
 }
 
@@ -225,6 +228,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/entries", s.handleAppendEntry)
 	mux.HandleFunc("POST /v2/entries", s.handleAppendLearningEntry)
 	mux.HandleFunc("POST /v3/entries", s.handleAppendStructuredLearningEntry)
+	mux.HandleFunc("GET /v1/codex/status", s.handleCodexStatus)
+	mux.HandleFunc("POST /v1/codex/translate", s.handleCodexTranslate)
 	return mux
 }
 
@@ -300,8 +305,8 @@ func (s *server) handleAppendLearningEntry(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "target_language must not be empty"})
 		return
 	}
-	if request.Provider != "aihubmix" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "provider must be aihubmix"})
+	if err := validateProvider(request.Provider); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
 		return
 	}
 	model := strings.TrimSpace(request.Model)
@@ -369,8 +374,8 @@ func (s *server) handleAppendStructuredLearningEntry(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "target_language must not be empty"})
 		return
 	}
-	if request.Provider != "aihubmix" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "provider must be aihubmix"})
+	if err := validateProvider(request.Provider); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Message: err.Error()})
 		return
 	}
 	model := strings.TrimSpace(request.Model)
@@ -563,6 +568,13 @@ func validateEnglishText(text string) error {
 	}
 	if !hasEnglishLetter {
 		return errors.New("text must contain an English letter")
+	}
+	return nil
+}
+
+func validateProvider(provider string) error {
+	if provider != "aihubmix" && provider != "local_codex" {
+		return errors.New("provider must be aihubmix or local_codex")
 	}
 	return nil
 }

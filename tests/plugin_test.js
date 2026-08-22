@@ -10,8 +10,12 @@ function loadPlugin(http, options = {}) {
   const context = {
     $http: http,
     $option: {
+      provider: "aihubmix",
       apiKey: "test-key",
       model: "gpt-4o-mini",
+      codexModel: "gpt-5.6-terra",
+      codexReasoningEffort: "low",
+      codexServiceTier: "standard",
       systemPrompt: "",
       outputPath: "~/Downloads/bob-wordbook.jsonl",
       ...options,
@@ -503,6 +507,148 @@ test("translate rejects malformed word data instead of persisting or displaying 
   assert.equal(helperCalled, false);
   assert.equal(completion.error.type, "api");
   assert.match(completion.error.message, /缺少核心释义/);
+});
+
+test("translate uses local Codex settings and persists the structured result", () => {
+  const requests = [];
+  let streamCalled = false;
+  let completion;
+  const plugin = loadPlugin(
+    {
+      streamRequest: () => {
+        streamCalled = true;
+      },
+      request: (request) => {
+        requests.push(request);
+        if (request.url.endsWith("/v1/codex/translate")) {
+          request.handler({
+            data: {
+              ok: true,
+              kind: "text",
+              content: { text: "含义：小菜一碟\n例句：It is a piece of cake." },
+              model: "gpt-5.6-terra",
+            },
+            response: { statusCode: 200 },
+          });
+          return;
+        }
+        request.handler({
+          data: { ok: true, path: "/tmp/wordbook.jsonl" },
+          response: { statusCode: 201 },
+        });
+      },
+    },
+    {
+      provider: "local_codex",
+      apiKey: "",
+      codexModel: "gpt-5.6-terra",
+      codexReasoningEffort: "medium",
+      codexServiceTier: "fast",
+    },
+  );
+
+  plugin.translate(
+    {
+      text: "piece of cake",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(streamCalled, false);
+  assert.equal(requests[0].url, "http://127.0.0.1:19820/v1/codex/translate");
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
+    text: "piece of cake",
+    kind: "text",
+    system_prompt: plugin.buildSystemPrompt(
+      { detectFrom: "en", detectTo: "zh-Hans" },
+      "piece of cake",
+      "",
+    ),
+    model: "gpt-5.6-terra",
+    reasoning_effort: "medium",
+    service_tier: "fast",
+  });
+  assert.equal(requests[1].url, "http://127.0.0.1:19820/v3/entries");
+  assert.equal(requests[1].body.provider, "local_codex");
+  assert.equal(requests[1].body.model, "gpt-5.6-terra");
+  assert.equal(completion.result.raw.provider, "local_codex");
+  assert.equal(completion.result.raw.saved, true);
+  assert.match(completion.result.toParagraphs[0], /小菜一碟/);
+});
+
+test("translate renders a local Codex word with Bob native dictionary fields", () => {
+  let completion;
+  const plugin = loadPlugin(
+    {
+      streamRequest: () => assert.fail("AIHubMix must not be called"),
+      request: (request) => {
+        if (request.url.endsWith("/v1/codex/translate")) {
+          request.handler({
+            data: {
+              ok: true,
+              kind: "word",
+              content: JSON.parse(wordJSON()),
+              model: "gpt-5.6-terra",
+            },
+            response: { statusCode: 200 },
+          });
+          return;
+        }
+        request.handler({
+          data: { ok: true, path: "/tmp/wordbook.jsonl" },
+          response: { statusCode: 201 },
+        });
+      },
+    },
+    { provider: "local_codex", apiKey: "" },
+  );
+
+  plugin.translate(
+    {
+      text: "translation",
+      detectFrom: "en",
+      detectTo: "zh-Hans",
+      onCompletion: (value) => {
+        completion = value;
+      },
+    },
+    undefined,
+  );
+
+  assert.equal(completion.result.toDict.word, "translation");
+  assert.deepEqual(Array.from(completion.result.toDict.parts[0].means), ["翻译", "译文"]);
+  assert.equal(completion.result.raw.model, "gpt-5.6-terra");
+});
+
+test("pluginValidate checks local Codex through the helper", () => {
+  let validationRequest;
+  let validationResult;
+  const plugin = loadPlugin(
+    {
+      streamRequest: () => {},
+      request: (request) => {
+        validationRequest = request;
+        request.handler({
+          response: { statusCode: 200 },
+          data: { ok: true, available: true, authenticated: true, version: "codex-cli 0.149.0" },
+        });
+      },
+    },
+    { provider: "local_codex", apiKey: "" },
+  );
+
+  plugin.pluginValidate((value) => {
+    validationResult = value;
+  });
+
+  assert.equal(validationRequest.url, "http://127.0.0.1:19820/v1/codex/status");
+  assert.equal(validationRequest.header["X-Bob-Wordbook-Client"], "bob-plugin");
+  assert.equal(validationResult.result, true);
 });
 
 test("pluginValidate checks the configured key against AIHubMix", () => {

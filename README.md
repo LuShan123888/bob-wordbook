@@ -4,18 +4,20 @@
 [![Release](https://img.shields.io/github/v/release/LuShan123888/bob-wordbook)](https://github.com/LuShan123888/bob-wordbook/releases)
 [![License](https://img.shields.io/github/license/LuShan123888/bob-wordbook)](LICENSE)
 
-面向英语学习的 Bob 翻译插件：通过 AIHubMix 流式生成翻译、释义、例句和语法建议，并将英文输入及完整结果追加到本地 JSONL。
+面向英语学习的 Bob 翻译插件：通过 AIHubMix 或已登录的本地 Codex CLI 生成翻译、释义、例句和语法建议，并将英文输入及完整结果追加到本地 JSONL。
 
 ## 特性
 
-- 单个 Bob 服务同时完成 AIHubMix 翻译和本地单词本持久化，不读取 Bob 内部数据库。
+- 可选择 AIHubMix 或本地 Codex；本地 Codex 可使用 ChatGPT 账号登录，不需要额外配置 AIHubMix API Key。
+- 本地 Codex 支持自定义模型、`low` 至 `max` 思考深度，以及 Standard/Fast 速度模式。
+- 单个 Bob 服务同时完成翻译和本地单词本持久化，不读取 Bob 内部数据库。
 - 英文单词使用 Bob 原生词典界面；短语和句子使用适合连续阅读的纯文本结果。
 - 单词只展示音标、核心释义和一条例句；更多结构化学习内容保存在 JSONL 中。
 - 中文等非英文输入可以正常翻译，但不会写入单词本。
-- 只有完整收到 AIHubMix 流式结束标记后才会保存，截断结果不会落盘。
+- 只有收到完整且通过校验的模型结果后才会保存，截断或无效结果不会落盘。
 - 保存失败时保留翻译结果并显示明确警告，不会误报“已保存”。
 - 默认写入 `~/Downloads/bob-wordbook.jsonl`，也可指定其他 `.jsonl` 路径。
-- helper 只监听本机回环地址，不接收或保存 AIHubMix API Key。
+- helper 只监听本机回环地址，不接收或保存 AIHubMix API Key 或 Codex 登录凭据。
 - 提供 macOS LaunchAgent 安装器、Universal Binary Release、自动更新 appcast 和 CI。
 
 ## 工作方式
@@ -25,18 +27,15 @@ Bob 划词或输入翻译
         │
         ▼
 Bob Wordbook 插件
-        ├── HTTPS ──▶ AIHubMix ──▶ 流式翻译结果
+        ├── AIHubMix ───────────▶ 流式翻译结果
         │
-        └── HTTP 127.0.0.1（仅英文完整结果）
-                      │
-                      ▼
-               Go 本地 helper
-                      │
-                      ▼
-          ~/Downloads/bob-wordbook.jsonl
+        └── HTTP 127.0.0.1 ────▶ Go 本地 helper ────▶ Codex CLI
+                                      │
+                                      ▼
+                         ~/Downloads/bob-wordbook.jsonl
 ```
 
-API Key 仅由 Bob 插件发送给 AIHubMix。helper 和 JSONL 都不会接收 API Key，也不会保存 System Prompt。
+AIHubMix API Key 仅由 Bob 插件发送给 AIHubMix。Codex 登录由 CLI 自己管理；helper 不读取或复制 Codex 的认证文件。JSONL 不保存密钥、登录凭据或 System Prompt。
 
 ## 安装
 
@@ -62,8 +61,8 @@ API Key 仅由 Bob 插件发送给 AIHubMix。helper 和 JSONL 都不会接收 A
    ```
 
 4. 双击同一目录中的 `.bobplugin` 文件。
-5. 在 Bob「设置 → 服务 → 文本翻译」中添加并启用「AIHubMix 英语学习」。
-6. 填写 AIHubMix API Key 和模型 ID；需要时粘贴自己的 System Prompt。
+5. 在 Bob「设置 → 服务 → 文本翻译」中添加并启用「英语学习与单词本」。
+6. 选择 AIHubMix 或本地 Codex，并填写对应配置；需要时粘贴自己的 System Prompt。
 7. 关闭原来的 AIHubMix 和旧版「单词本 JSONL」服务，避免一次翻译产生重复结果。
 
 安装器会写入：
@@ -88,14 +87,29 @@ make plugin
 bash scripts/install.sh bin/bob-wordbook-helper
 ```
 
-然后双击 `dist/bob-wordbook-v3.1.0.bobplugin`。
+然后双击 `dist/bob-wordbook-v3.2.0.bobplugin`。
 
 ## 配置
 
-- AIHubMix API Key：必填，仅用于请求 `https://aihubmix.com/v1/chat/completions`。
-- 模型：必填，默认 `gpt-4o-mini`；可填写 AIHubMix 模型广场中的其他模型 ID。
+- 翻译服务：默认 AIHubMix，也可选择本地 Codex。
+- AIHubMix API Key：选择 AIHubMix 时必填，仅用于请求 `https://aihubmix.com/v1/chat/completions`。
+- AIHubMix 模型：默认 `gpt-4o-mini`；可填写 AIHubMix 模型广场中的其他模型 ID。
+- Codex 模型：默认 `gpt-5.6-terra`，必须对当前登录账号可用。
+- Codex 思考深度：默认 `low`；支持 `low`、`medium`、`high`、`xhigh` 和 `max`。
+- Codex 速度模式：默认 Standard；Fast 延迟更低，但会消耗更多套餐用量。
 - System Prompt：可选；留空使用内置英语学习 Prompt。
 - JSONL 文件路径：默认 `~/Downloads/bob-wordbook.jsonl`。
+
+### 使用本地 Codex
+
+本地 Codex 模式需要先安装 [Codex CLI](https://developers.openai.com/codex/cli) 并完成登录：
+
+```bash
+codex login
+codex login status
+```
+
+helper 会依次查找 `/opt/homebrew/bin/codex`、`/usr/local/bin/codex`、`~/.local/bin/codex` 和当前 `PATH`。翻译时使用临时工作目录、只读沙箱和临时会话，并禁用 Shell、浏览器、Apps、图片生成及多 Agent 工具。首次实现等待结构化结果完整返回，不提供流式中间文本。
 
 自定义 Prompt 支持 Bob 常用变量：
 
@@ -107,7 +121,7 @@ bash scripts/install.sh bin/bob-wordbook-helper
 
 ## JSONL 数据
 
-英文翻译成功后，每次追加一个 schema v3 对象。单词保存为结构化内容：
+英文翻译成功后，每次追加一个 schema v3 对象。`provider` 会记录为 `aihubmix` 或 `local_codex`。单词保存为结构化内容：
 
 ```jsonl
 {"schema_version":3,"text":"translation","kind":"word","content":{"word":"translation","phonetics":[{"type":"us","value":"trænzˈleɪʃən"}],"parts":[{"part":"n.","means":["翻译","译文"]}],"collocations":[{"text":"Chinese translation","meaning":"中文译文"}],"examples":[{"text":"Please send me the translation.","translation":"请把译文发给我。"}]},"source_language":"en","target_language":"zh-Hans","provider":"aihubmix","model":"gpt-4o-mini","created_at":"2026-08-22T12:30:00+08:00"}
@@ -117,7 +131,7 @@ bash scripts/install.sh bin/bob-wordbook-helper
 
 ## 升级与卸载
 
-升级时必须同时运行新 Release 中的 `install.sh` 并安装新的 `.bobplugin`。3.1.0 插件需要支持 `/v3/entries` 的 3.1.0 helper；只升级其中一项将无法保存。从 2.1.0 升级到 3.x 后，还需要在插件设置中新增 AIHubMix API Key、模型和 Prompt 配置。
+升级时必须同时运行新 Release 中的 `install.sh` 并安装新的 `.bobplugin`。本地 Codex 需要 3.2.0 或更高版本的插件和 helper；只升级其中一项将无法使用该服务。原有 AIHubMix 配置继续兼容。
 
 卸载 helper：
 
@@ -147,6 +161,9 @@ tail -n 100 ~/Library/Logs/bob-wordbook/stderr.log
 
 - `请先填写 AIHubMix API Key`：在插件设置中填写有效密钥并点击验证。
 - `AIHubMix 流式响应未正常完成`：请求中途断开，插件不会保存不完整结果，可重试。
+- `本地 Codex 尚不可用`：运行 `codex login status`，并确认 helper 能找到 Codex CLI。
+- `Codex translation timed out`：降低思考深度或重试；日常翻译建议使用 `low`。
+- 本地 Codex 返回模型不可用：将 Codex 模型改成当前 ChatGPT 账号可用的模型。
 - `无法连接 Wordbook 本地辅助程序`：helper 未运行或端口 `19820` 被占用；译文仍会显示，但不会落盘。
 - `path must point to a .jsonl file`：配置路径不是 `.jsonl` 文件。
 - 无法写入目标目录：在「系统设置 → 隐私与安全性 → 文件与文件夹」中允许 helper 访问。

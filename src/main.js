@@ -1,5 +1,7 @@
 var aiHubMixURL = "https://aihubmix.com/v1/chat/completions";
 var helperURL = "http://127.0.0.1:19820/v3/entries";
+var codexTranslateURL = "http://127.0.0.1:19820/v1/codex/translate";
+var codexStatusURL = "http://127.0.0.1:19820/v1/codex/status";
 
 function supportLanguages() {
   return ["auto", "en", "zh-Hans", "zh-Hant"];
@@ -38,6 +40,15 @@ function translate(query, completion) {
     return;
   }
 
+  if (config.provider === "local_codex") {
+    translateWithLocalCodex(state, query, completion, config, text);
+    return;
+  }
+
+  translateWithAIHubMix(state, query, completion, config, text);
+}
+
+function translateWithAIHubMix(state, query, completion, config, text) {
   try {
     $http.streamRequest({
       method: "POST",
@@ -96,6 +107,11 @@ function pluginValidate(completion) {
     return;
   }
 
+  if (config.provider === "local_codex") {
+    validateLocalCodex(completion);
+    return;
+  }
+
   try {
     $http.request({
       method: "GET",
@@ -138,6 +154,134 @@ function pluginValidate(completion) {
         }
       });
   }
+}
+
+function validateLocalCodex(completion) {
+  try {
+    $http.request({
+      method: "GET",
+      url: codexStatusURL,
+      header: {
+        "X-Bob-Wordbook-Client": "bob-plugin"
+      },
+      timeout: 10,
+      handler: function(resp) {
+        if (resp.error) {
+          completion({
+            result: false,
+            error: {
+              type: "network",
+              message: "无法连接 Wordbook 本地辅助程序。",
+              addition: errorMessage(resp.error, "请确认 helper 已安装并启动。")
+            }
+          });
+          return;
+        }
+        var statusCode = resp.response ? resp.response.statusCode : 0;
+        if (statusCode >= 200 && statusCode < 300 && resp.data && resp.data.ok) {
+          completion({ result: true });
+          return;
+        }
+        completion({
+          result: false,
+          error: {
+            type: "api",
+            message: statusCode === 404 ? "helper 版本过旧，请升级后再使用本地 Codex。" : "本地 Codex 尚不可用。",
+            addition: resp.data && resp.data.message ? resp.data.message : "HTTP " + statusCode
+          }
+        });
+      }
+    });
+  } catch (error) {
+    completion({
+      result: false,
+      error: {
+        type: "network",
+        message: "无法验证本地 Codex。",
+        addition: errorMessage(error, "未知错误")
+      }
+    });
+  }
+}
+
+function translateWithLocalCodex(state, query, completion, config, text) {
+  try {
+    $http.request({
+      method: "POST",
+      url: codexTranslateURL,
+      header: {
+        "Content-Type": "application/json",
+        "X-Bob-Wordbook-Client": "bob-plugin"
+      },
+      body: {
+        text: text,
+        kind: state.wordLookup ? "word" : "text",
+        system_prompt: buildSystemPrompt(query, text, config.systemPrompt),
+        model: config.codexModel,
+        reasoning_effort: config.codexReasoningEffort,
+        service_tier: config.codexServiceTier
+      },
+      timeout: 110,
+      cancelSignal: query.cancelSignal,
+      handler: function(resp) {
+        handleLocalCodexCompletion(state, query, completion, config, text, resp);
+      }
+    });
+  } catch (error) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "network",
+        message: "无法发起本地 Codex 请求。",
+        addition: errorMessage(error, "未知错误")
+      }
+    });
+  }
+}
+
+function handleLocalCodexCompletion(state, query, completion, config, text, resp) {
+  if (resp.error) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "network",
+        message: "本地 Codex 请求失败。",
+        addition: errorMessage(resp.error, "未知网络错误")
+      }
+    });
+    return;
+  }
+
+  var statusCode = resp.response ? resp.response.statusCode : 0;
+  if (statusCode < 200 || statusCode >= 300 || !resp.data || !resp.data.ok) {
+    var message = statusCode === 404 ? "helper 版本过旧，请升级后再使用本地 Codex。" : "本地 Codex 翻译失败。";
+    completeOnce(state, query, completion, {
+      error: {
+        type: "api",
+        message: message,
+        addition: resp.data && resp.data.message ? resp.data.message : "HTTP " + statusCode
+      }
+    });
+    return;
+  }
+
+  var wordResult = null;
+  var resultText = "";
+  try {
+    if (state.wordLookup) {
+      wordResult = normalizeWordResult(resp.data.content, text, "本地 Codex");
+      resultText = wordResult.word;
+    } else {
+      resultText = formatForBob(resp.data.content && resp.data.content.text);
+    }
+  } catch (error) {
+    completeOnce(state, query, completion, {
+      error: {
+        type: "api",
+        message: errorMessage(error, "本地 Codex 未返回有效数据。")
+      }
+    });
+    return;
+  }
+  finishGeneratedTranslation(state, query, completion, config, text, resultText, wordResult);
 }
 
 function handleAIHubMixCompletion(state, query, completion, config, text, resp) {
@@ -205,16 +349,19 @@ function handleAIHubMixCompletion(state, query, completion, config, text, resp) 
   } else {
     resultText = formatForBob(state.text);
   }
+  finishGeneratedTranslation(state, query, completion, config, text, resultText, wordResult);
+}
+
+function finishGeneratedTranslation(state, query, completion, config, text, resultText, wordResult) {
   if (!resultText) {
     completeOnce(state, query, completion, {
       error: {
         type: "api",
-        message: "AIHubMix 未返回有效结果。"
+        message: providerDisplayName(config.provider) + " 未返回有效结果。"
       }
     });
     return;
   }
-
   if (!shouldPersist(query, text)) {
     finishTranslation(state, query, completion, config, resultText, wordResult, {
       saved: false
@@ -242,8 +389,8 @@ function persistLearningEntry(query, config, text, resultText, wordResult, callb
         content: wordResult || { text: resultText },
         source_language: query.detectFrom || "en",
         target_language: query.detectTo || "zh-Hans",
-        provider: "aihubmix",
-        model: config.model,
+        provider: config.provider,
+        model: configuredModel(config),
         path: config.outputPath
       },
       timeout: 5,
@@ -299,8 +446,8 @@ function finishTranslation(state, query, completion, config, resultText, wordRes
     from: query.detectFrom,
     to: query.detectTo,
     raw: {
-      provider: "aihubmix",
-      model: config.model,
+      provider: config.provider,
+      model: configuredModel(config),
       saved: saveResult.saved,
       path: saveResult.path || "",
       saveError: saveResult.message || "",
@@ -373,14 +520,45 @@ function processSSEEvent(state, query, eventText) {
 
 function readConfig() {
   return {
+    provider: String($option.provider || "aihubmix").trim(),
     apiKey: String($option.apiKey || "").trim(),
     model: String($option.model || "").trim(),
+    codexModel: String($option.codexModel || "gpt-5.6-terra").trim(),
+    codexReasoningEffort: String($option.codexReasoningEffort || "low").trim(),
+    codexServiceTier: String($option.codexServiceTier || "standard").trim(),
     systemPrompt: String($option.systemPrompt || "").trim(),
     outputPath: String($option.outputPath || "").trim()
   };
 }
 
 function validateConfig(config) {
+  if (config.provider !== "aihubmix" && config.provider !== "local_codex") {
+    return {
+      type: "param",
+      message: "请选择有效的翻译服务。"
+    };
+  }
+  if (config.provider === "local_codex") {
+    if (!config.codexModel) {
+      return {
+        type: "param",
+        message: "请先在插件设置中填写 Codex 模型名称。"
+      };
+    }
+    if (["low", "medium", "high", "xhigh", "max"].indexOf(config.codexReasoningEffort) < 0) {
+      return {
+        type: "param",
+        message: "请选择有效的 Codex 思考深度。"
+      };
+    }
+    if (config.codexServiceTier !== "standard" && config.codexServiceTier !== "fast") {
+      return {
+        type: "param",
+        message: "请选择有效的 Codex 速度模式。"
+      };
+    }
+    return null;
+  }
   if (!config.apiKey) {
     return {
       type: "secretKey",
@@ -394,6 +572,14 @@ function validateConfig(config) {
     };
   }
   return null;
+}
+
+function configuredModel(config) {
+  return config.provider === "local_codex" ? config.codexModel : config.model;
+}
+
+function providerDisplayName(provider) {
+  return provider === "local_codex" ? "本地 Codex" : "AIHubMix";
 }
 
 function buildSystemPrompt(query, text, configuredPrompt) {
@@ -461,11 +647,18 @@ function parseWordResult(text, originalWord) {
     throw new Error("AIHubMix 返回的单词结果不是 JSON 对象。");
   }
 
+  return normalizeWordResult(value, originalWord, "AIHubMix");
+}
+
+function normalizeWordResult(value, originalWord, providerName) {
+  if (!value || Object.prototype.toString.call(value) !== "[object Object]") {
+    throw new Error(providerName + " 返回的单词结果不是 JSON 对象。");
+  }
   var word = originalWord;
   var phonetics = sanitizePhonetics(value.phonetics);
   var parts = sanitizeParts(value.parts);
   if (!parts.length) {
-    throw new Error("AIHubMix 返回的单词结果缺少核心释义。");
+    throw new Error(providerName + " 返回的单词结果缺少核心释义。");
   }
 
   return {

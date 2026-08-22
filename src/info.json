@@ -1,15 +1,32 @@
 {
   "identifier": "com.cian.bobwordbook",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "category": "translate",
-  "name": "AIHubMix 英语学习",
-  "summary": "使用 AIHubMix 翻译和分析英语，以 Bob 原生词典展示单词并保存结构化 JSONL。",
+  "name": "英语学习与单词本",
+  "summary": "使用 AIHubMix 或本地 Codex 翻译和分析英语，以 Bob 原生词典展示单词并保存结构化 JSONL。",
   "icon": "143",
   "author": "Cian Lu",
   "homepage": "https://github.com/LuShan123888/bob-wordbook",
   "appcast": "https://raw.githubusercontent.com/LuShan123888/bob-wordbook/main/appcast.json",
   "minBobVersion": "1.8.0",
   "options": [
+    {
+      "identifier": "provider",
+      "type": "menu",
+      "title": "翻译服务",
+      "defaultValue": "aihubmix",
+      "menuValues": [
+        {
+          "title": "AIHubMix",
+          "value": "aihubmix"
+        },
+        {
+          "title": "本地 Codex（ChatGPT 登录）",
+          "value": "local_codex"
+        }
+      ],
+      "desc": "本地 Codex 由 helper 调用已登录的 Codex CLI，不需要 AIHubMix API Key。"
+    },
     {
       "identifier": "apiKey",
       "type": "text",
@@ -18,7 +35,7 @@
         "type": "secure",
         "placeholderText": "sk-..."
       },
-      "desc": "仅用于从 Bob 直接请求 AIHubMix，不会写入 JSONL 或发送给本地辅助程序。"
+      "desc": "仅在翻译服务选择 AIHubMix 时使用，不会写入 JSONL 或发送给本地辅助程序。"
     },
     {
       "identifier": "model",
@@ -30,6 +47,42 @@
         "placeholderText": "gpt-4o-mini"
       },
       "desc": "填写 AIHubMix 模型广场中的模型 ID。"
+    },
+    {
+      "identifier": "codexModel",
+      "type": "text",
+      "title": "Codex 模型",
+      "defaultValue": "gpt-5.6-terra",
+      "textConfig": {
+        "type": "visible",
+        "placeholderText": "gpt-5.6-terra"
+      },
+      "desc": "仅在翻译服务选择本地 Codex 时使用；模型必须对当前 ChatGPT 账号可用。"
+    },
+    {
+      "identifier": "codexReasoningEffort",
+      "type": "menu",
+      "title": "Codex 思考深度",
+      "defaultValue": "low",
+      "menuValues": [
+        { "title": "Low（推荐，翻译更快）", "value": "low" },
+        { "title": "Medium", "value": "medium" },
+        { "title": "High", "value": "high" },
+        { "title": "XHigh", "value": "xhigh" },
+        { "title": "Max（消耗最高）", "value": "max" }
+      ],
+      "desc": "仅在翻译服务选择本地 Codex 时使用；日常翻译建议选择 Low。"
+    },
+    {
+      "identifier": "codexServiceTier",
+      "type": "menu",
+      "title": "Codex 速度模式",
+      "defaultValue": "standard",
+      "menuValues": [
+        { "title": "Standard（推荐）", "value": "standard" },
+        { "title": "Fast（更快、消耗更多用量）", "value": "fast" }
+      ],
+      "desc": "Fast 会使用更多 ChatGPT Codex 套餐用量；需要低延迟时再开启。"
     },
     {
       "identifier": "systemPrompt",
